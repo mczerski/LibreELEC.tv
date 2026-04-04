@@ -1,0 +1,5728 @@
+diff --git a/arch/arm64/boot/dts/amlogic/meson-sm1-gtcombo.dts b/arch/arm64/boot/dts/amlogic/meson-sm1-gtcombo.dts
+index a5ad894524d3..60060f222153 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-sm1-gtcombo.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-sm1-gtcombo.dts
+@@ -119,24 +119,20 @@ &clkc CLKID_AHB_ARB0
+ 		reset-names = "demux_rst", "des_rst", "demux0_rst", "demux1_rst", "demux2_rst", "async0_rst", "async1_rst";
+ 	};
+ 
+-	//dvb-fe {
+-	//	compatible = "amlogic,dvb-bridge";
++    dvb-fe {
++        compatible = "amlogic,dvb-bridge";
+ 
+-	//	demux = <&dvb_demux>;
++        demux = <&dvb_demux>;
+ 
+-	//	frontends {
+-	//		fe0 {
+-	//			demod-dev = <&dvb_demod0>;
+-	//			tuner-dev = <&dvb_tuner0>;
+-	//		};
++        frontend@0 {
++            demod-dev = <&dvb_demod0>;
++            tuner-dev = <&dvb_tuner0>;
++        };
+ 
+-	//		fe1 {
+-	//			demod-i2c-bus = <&i2c2>;
+-	//			demod-i2c-addr = <0x69>;
+-	//			demod-module = "m88rs6060";
+-	//		};
+-	//	};
+-	//};
++        frontend@1 {
++            demod-dev = <&dvb_demod1>;
++        };
++    };
+ 	//dvb-extern {
+ 	//	//dvb_power_value = <0x00>;
+ 	//	//dvb_power_gpio = <&gpio GPIOA_15 GPIO_ACTIVE_LOW>;
+@@ -182,12 +178,21 @@ &i2c2 {
+ 	dvb_demod0: dvb-demod@6c {
+ 		compatible = "sony,cxd2878-24-s";
+ 		reg = <0x6c>;
++
++        i2c-gate {
++            #address-cells = <1>;
++            #size-cells = <0>;
++
++            dvb_tuner0: dvb-tuner@64 {
++                compatible = "montage,m88tc6800-27";
++                reg = <0x64>;
++            };
++        };
+ 	};
+ 
+-	dvb_tuner0: dvb-tuner@64 {
+-		compatible = "montage,m88tc6800-27";
+-		reg = <0x64>;
+-		demod-dev = <&dvb_demod0>;
++	dvb_demod1: dvb-demod@69 {
++		compatible = "montage,m88rs6060-27p";
++		reg = <0x69>;
+ 	};
+ };
+ 
+diff --git a/drivers/media/dvb-frontends/Kconfig b/drivers/media/dvb-frontends/Kconfig
+index 6ab1050bea29..658e61c5b2fb 100644
+--- a/drivers/media/dvb-frontends/Kconfig
++++ b/drivers/media/dvb-frontends/Kconfig
+@@ -19,6 +19,14 @@ config DVB_M88DS3103
+ 	help
+ 	  Say Y when you want to support this frontend.
+ 
++config DVB_M88RS6060
++	tristate "Montage Technology M88RS6060"
++	depends on DVB_CORE && I2C && I2C_MUX
++	select REGMAP_I2C
++	default m if !MEDIA_SUBDRV_AUTOSELECT
++	help
++	  Say Y when you want to support this frontend.
++
+ config DVB_MXL5XX
+ 	tristate "MaxLinear MxL5xx based tuner-demodulators"
+ 	depends on DVB_CORE && I2C
+diff --git a/drivers/media/dvb-frontends/Makefile b/drivers/media/dvb-frontends/Makefile
+index a0cf62b4883d..49f70f502419 100644
+--- a/drivers/media/dvb-frontends/Makefile
++++ b/drivers/media/dvb-frontends/Makefile
+@@ -73,6 +73,7 @@ obj-$(CONFIG_DVB_LNBP21) += lnbp21.o
+ obj-$(CONFIG_DVB_LNBP22) += lnbp22.o
+ obj-$(CONFIG_DVB_M88DS3103) += m88ds3103.o
+ obj-$(CONFIG_DVB_M88RS2000) += m88rs2000.o
++obj-$(CONFIG_DVB_M88RS6060) += m88rs6060.o
+ obj-$(CONFIG_DVB_MB86A16) += mb86a16.o
+ obj-$(CONFIG_DVB_MB86A20S) += mb86a20s.o
+ obj-$(CONFIG_DVB_MN88443X) += mn88443x.o
+diff --git a/drivers/media/dvb-frontends/cxd2878.c b/drivers/media/dvb-frontends/cxd2878.c
+index 993ebc510d77..812a9914dad6 100644
+--- a/drivers/media/dvb-frontends/cxd2878.c
++++ b/drivers/media/dvb-frontends/cxd2878.c
+@@ -276,20 +276,6 @@ static int cxd2878_atsc_softreset(struct cxd2878_dev *dev)
+ 	dev_err(&dev->i2c_slvt->dev,"%s :cxd2878_atsc_softreset error! \n",KBUILD_MODNAME);
+ 	return ret;	
+ }
+-static int cxd2878_i2c_repeater(struct cxd2878_dev *dev,bool enable)
+-{
+-	int ret;
+-
+-	ret = cxd2878_wr(dev,dev->slvx,0x08,enable?1:0);
+-	if(ret)
+-		goto err;
+-
+-	return 0;
+-
+-err:
+-	dev_err(&dev->i2c_slvt->dev,"%s : %sable thee repeater failed! \n",KBUILD_MODNAME,enable?"en":"dis");
+-	return ret;
+-}
+ 
+ static int cxd2878_setstreamoutput(struct cxd2878_dev*dev,int enable)
+ {
+@@ -2431,24 +2417,38 @@ static const struct dvb_frontend_ops cxd2878_ops = {
+ 			.read_ucblocks			= cxd2878_read_ucblocks,
+ };
+ 
+-static int cxd2878_select(struct i2c_mux_core *muxc, u32 chan)
++static int cxd2878_i2c_repeater(struct i2c_mux_core *muxc, u8 enable)
+ {
+ 	struct cxd2878_dev *dev = i2c_mux_priv(muxc);
+-	if (!dev->warm) {
+-		cxd2878_SetBankAndRegisterBits(dev,dev->slvx,0x00,0x1A,0x01,0xFF);
+-		msleep(2);
+-	}
+-	return cxd2878_i2c_repeater(dev, 1);
++	struct i2c_adapter *i2c = muxc->parent;
++	u8 select[] = { 0x08, enable };
++	struct i2c_msg msg[] = {
++        {
++            .addr = dev->i2c_slvx->addr,
++			.flags = 0,
++			.buf = select,
++			.len = ARRAY_SIZE(select)
++        },
++    };
++	int ret;
++
++	ret = __i2c_transfer(i2c, msg, ARRAY_SIZE(msg));
++	if (ret < 0) {
++		dev_err(muxc->dev, "select fail=%d\n", ret);
++        return ret;
++    }
++
++	return 0;
++}
++
++static int cxd2878_select(struct i2c_mux_core *muxc, u32 chan)
++{
++    return cxd2878_i2c_repeater(muxc, 1);
+ }
+ 
+ static int cxd2878_deselect(struct i2c_mux_core *muxc, u32 chan)
+ {
+-	struct cxd2878_dev *dev = i2c_mux_priv(muxc);
+-	if (!dev->warm) {
+-		cxd2878_SetBankAndRegisterBits(dev,dev->slvx,0x00,0x1A,0x01,0xFF);
+-		msleep(2);
+-	}
+-	return cxd2878_i2c_repeater(dev, 0);
++    return cxd2878_i2c_repeater(muxc, 0);
+ }
+ 
+ static int cxd2878_bind(struct device *dev,
+@@ -2461,7 +2461,7 @@ static int cxd2878_bind(struct device *dev,
+ 	fe->demodulator_priv = priv;
+ 	memcpy(&fe->ops, &cxd2878_ops, sizeof(struct dvb_frontend_ops));
+ 
+-	return 0;
++	return cxd2878_init(fe);
+ }
+ 
+ static void cxd2878_unbind(struct device *dev,
+@@ -2671,7 +2671,7 @@ static int cxd2878_probe(struct i2c_client *client)
+ 	dev->chipid = id;
+ 
+     /* create mux i2c adapter for tuner */
+-    dev->muxc = i2c_mux_alloc(client->adapter, &client->dev, 1, 0, I2C_MUX_GATE | I2C_MUX_LOCKED,
++    dev->muxc = i2c_mux_alloc(client->adapter, &client->dev, 1, 0, I2C_MUX_GATE,
+                   cxd2878_select, cxd2878_deselect);
+     if (!dev->muxc) {
+         ret = -ENOMEM;
+diff --git a/drivers/media/dvb-frontends/m88rs6060.c b/drivers/media/dvb-frontends/m88rs6060.c
+new file mode 100644
+index 000000000000..d8673a2966f0
+--- /dev/null
++++ b/drivers/media/dvb-frontends/m88rs6060.c
+@@ -0,0 +1,3239 @@
++//SPX-License-Identifier: GPL-2.0-or-later
++/*
++ * Montage Technology M88rs6060 demodulator and tuner drivers
++ * some code form m88ds3103
++ * Copyright (c) 2021 Davin zhang <Davin@tbsdtv.com> www.Turbosight.com
++ *
++*/
++#include "m88rs6060_priv.h"
++#include <linux/mutex.h>
++#include <linux/component.h>
++#include <linux/i2c-mux.h>
++#define HWTUNE
++
++struct m88rs6060_dev {
++	struct i2c_client *client;
++	struct regmap *regmap;
++	struct i2c_mux_core *muxc;
++	struct i2c_client *tuner_client;
++	struct regmap *tuner_regmap;
++	struct m88rs6060_cfg config;
++
++	enum fe_status fe_status;
++	bool TsClockChecked; //clock retio
++	bool warm; // for the init and download fw
++	s32 mclk; /*main mclk */
++
++	u32 dvbv3_ber; /* for old DVBv3 API read_ber */
++	u32 frequecy; //khz
++	u64 post_bit_error;
++	u64 post_bit_count;
++};
++
++static u16 mes_log10[] = {
++	0,     3010,  4771,  6021,  6990,  7781,  8451,	 9031,	9542,  10000,
++	10414, 10792, 11139, 11461, 11761, 12041, 12304, 12553, 12788, 13010,
++	13222, 13424, 13617, 13802, 13979, 14150, 14314, 14472, 14624, 14771,
++	14914, 15052, 15185, 15315, 15441, 15563, 15682, 15798, 15911, 16021,
++	16128, 16232, 16335, 16435, 16532, 16628, 16721, 16812, 16902, 16990,
++	17076, 17160, 17243, 17324, 17404, 17482, 17559, 17634, 17709, 17782,
++	17853, 17924, 17993, 18062, 18129, 18195, 18261, 18325, 18388, 18451,
++	18513, 18573, 18633, 18692, 18751, 18808, 18865, 18921, 18976, 19031
++};
++
++static u16 mes_loge[] = { 0,	 6931,	10986, 13863, 16094, 17918, 19459,
++			  20794, 21972, 23026, 23979, 24849, 25649, 26391,
++			  27081, 27726, 28332, 28904, 29444, 29957, 30445,
++			  30910, 31355, 31781, 32189, 32581, 32958, 33322,
++			  33673, 34012, 34340, 34657 };
++
++static struct MT_FE_PLS_INFO mPLSInfoTable[] = {
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0x00, TRUE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, TRUE, 0 },
++	{ 0x01, TRUE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, TRUE, 0 },
++	{ 0x02, TRUE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, TRUE, 1 },
++	{ 0x03, TRUE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, TRUE, 1 },
++	{ 0x04, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_4, FALSE,
++	  FALSE, 0 },
++	{ 0x05, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_4, TRUE,
++	  FALSE, 0 },
++	{ 0x06, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_4, FALSE,
++	  FALSE, 1 },
++	{ 0x07, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_4, TRUE,
++	  FALSE, 1 },
++	{ 0x08, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_3, FALSE,
++	  FALSE, 0 },
++	{ 0x09, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_3, TRUE,
++	  FALSE, 0 },
++	{ 0x0A, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_3, FALSE,
++	  FALSE, 1 },
++	{ 0x0B, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_3, TRUE,
++	  FALSE, 1 },
++	{ 0x0C, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_5, FALSE,
++	  FALSE, 0 },
++	{ 0x0D, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_5, TRUE,
++	  FALSE, 0 },
++	{ 0x0E, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_5, FALSE,
++	  FALSE, 1 },
++	{ 0x0F, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_5, TRUE,
++	  FALSE, 1 },
++	{ 0x10, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_2, FALSE,
++	  FALSE, 0 },
++	{ 0x11, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_2, TRUE,
++	  FALSE, 0 },
++	{ 0x12, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_2, FALSE,
++	  FALSE, 1 },
++	{ 0x13, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_1_2, TRUE,
++	  FALSE, 1 },
++	{ 0x14, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_5, FALSE,
++	  FALSE, 0 },
++	{ 0x15, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_5, TRUE,
++	  FALSE, 0 },
++	{ 0x16, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_5, FALSE,
++	  FALSE, 1 },
++	{ 0x17, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_5, TRUE,
++	  FALSE, 1 },
++	{ 0x18, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_3, FALSE,
++	  FALSE, 0 },
++	{ 0x19, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_3, TRUE,
++	  FALSE, 0 },
++	{ 0x1A, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_3, FALSE,
++	  FALSE, 1 },
++	{ 0x1B, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_2_3, TRUE,
++	  FALSE, 1 },
++	{ 0x1C, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_4, FALSE,
++	  FALSE, 0 },
++	{ 0x1D, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_4, TRUE,
++	  FALSE, 0 },
++	{ 0x1E, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_4, FALSE,
++	  FALSE, 1 },
++	{ 0x1F, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_3_4, TRUE,
++	  FALSE, 1 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0x20, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_4_5, FALSE,
++	  FALSE, 0 },
++	{ 0x21, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_4_5, TRUE,
++	  FALSE, 0 },
++	{ 0x22, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_4_5, FALSE,
++	  FALSE, 1 },
++	{ 0x23, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_4_5, TRUE,
++	  FALSE, 1 },
++	{ 0x24, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_5_6, FALSE,
++	  FALSE, 0 },
++	{ 0x25, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_5_6, TRUE,
++	  FALSE, 0 },
++	{ 0x26, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_5_6, FALSE,
++	  FALSE, 1 },
++	{ 0x27, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_5_6, TRUE,
++	  FALSE, 1 },
++	{ 0x28, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_8_9, FALSE,
++	  FALSE, 0 },
++	{ 0x29, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_8_9, TRUE,
++	  FALSE, 0 },
++	{ 0x2A, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_8_9, FALSE,
++	  FALSE, 1 },
++	{ 0x2B, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_8_9, TRUE,
++	  FALSE, 1 },
++	{ 0x2C, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 0 },
++	{ 0x2D, TRUE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_9_10, TRUE,
++	  FALSE, 0 },
++	{ 0x2E, FALSE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 1 },
++	{ 0x2F, FALSE, MtFeType_DvbS2, MtFeModMode_Qpsk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 1 },
++	{ 0x30, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_5, FALSE,
++	  FALSE, 0 },
++	{ 0x31, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_5, TRUE,
++	  FALSE, 0 },
++	{ 0x32, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_5, FALSE,
++	  FALSE, 1 },
++	{ 0x33, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_5, TRUE,
++	  FALSE, 1 },
++	{ 0x34, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_2_3, FALSE,
++	  FALSE, 0 },
++	{ 0x35, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_2_3, TRUE,
++	  FALSE, 0 },
++	{ 0x36, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_2_3, FALSE,
++	  FALSE, 1 },
++	{ 0x37, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_2_3, TRUE,
++	  FALSE, 1 },
++	{ 0x38, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_4, FALSE,
++	  FALSE, 0 },
++	{ 0x39, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_4, TRUE,
++	  FALSE, 0 },
++	{ 0x3A, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_4, FALSE,
++	  FALSE, 1 },
++	{ 0x3B, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_3_4, TRUE,
++	  FALSE, 1 },
++	{ 0x3C, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_5_6, FALSE,
++	  FALSE, 0 },
++	{ 0x3D, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_5_6, TRUE,
++	  FALSE, 0 },
++	{ 0x3E, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_5_6, FALSE,
++	  FALSE, 1 },
++	{ 0x3F, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_5_6, TRUE,
++	  FALSE, 1 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0x40, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_8_9, FALSE,
++	  FALSE, 0 },
++	{ 0x41, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_8_9, TRUE,
++	  FALSE, 0 },
++	{ 0x42, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_8_9, FALSE,
++	  FALSE, 1 },
++	{ 0x43, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_8_9, TRUE,
++	  FALSE, 1 },
++	{ 0x44, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 0 },
++	{ 0x45, TRUE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_9_10, TRUE,
++	  FALSE, 0 },
++	{ 0x46, FALSE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 1 },
++	{ 0x47, FALSE, MtFeType_DvbS2, MtFeModMode_8psk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 1 },
++	{ 0x48, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 0 },
++	{ 0x49, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 0 },
++	{ 0x4A, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 1 },
++	{ 0x4B, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 1 },
++	{ 0x4C, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 0 },
++	{ 0x4D, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 0 },
++	{ 0x4E, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 1 },
++	{ 0x4F, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 1 },
++	{ 0x50, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_4_5,
++	  FALSE, FALSE, 0 },
++	{ 0x51, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_4_5,
++	  TRUE, FALSE, 0 },
++	{ 0x52, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_4_5,
++	  FALSE, FALSE, 1 },
++	{ 0x53, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_4_5,
++	  TRUE, FALSE, 1 },
++	{ 0x54, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_5_6,
++	  FALSE, FALSE, 0 },
++	{ 0x55, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_5_6,
++	  TRUE, FALSE, 0 },
++	{ 0x56, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_5_6,
++	  FALSE, FALSE, 1 },
++	{ 0x57, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_5_6,
++	  TRUE, FALSE, 1 },
++	{ 0x58, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_8_9,
++	  FALSE, FALSE, 0 },
++	{ 0x59, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_8_9,
++	  TRUE, FALSE, 0 },
++	{ 0x5A, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_8_9,
++	  FALSE, FALSE, 1 },
++	{ 0x5B, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_8_9,
++	  TRUE, FALSE, 1 },
++	{ 0x5C, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 0 },
++	{ 0x5D, TRUE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 0 },
++	{ 0x5E, FALSE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 1 },
++	{ 0x5F, FALSE, MtFeType_DvbS2, MtFeModMode_16Apsk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 1 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0x60, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 0 },
++	{ 0x61, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 0 },
++	{ 0x62, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 1 },
++	{ 0x63, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 1 },
++	{ 0x64, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_4_5,
++	  FALSE, FALSE, 0 },
++	{ 0x65, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_4_5,
++	  TRUE, FALSE, 0 },
++	{ 0x66, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_4_5,
++	  FALSE, FALSE, 1 },
++	{ 0x67, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_4_5,
++	  TRUE, FALSE, 1 },
++	{ 0x68, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_5_6,
++	  FALSE, FALSE, 0 },
++	{ 0x69, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_5_6,
++	  TRUE, FALSE, 0 },
++	{ 0x6A, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_5_6,
++	  FALSE, FALSE, 1 },
++	{ 0x6B, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_5_6,
++	  TRUE, FALSE, 1 },
++	{ 0x6C, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_8_9,
++	  FALSE, FALSE, 0 },
++	{ 0x6D, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_8_9,
++	  TRUE, FALSE, 0 },
++	{ 0x6E, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_8_9,
++	  FALSE, FALSE, 1 },
++	{ 0x6F, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_8_9,
++	  TRUE, FALSE, 1 },
++	{ 0x70, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 0 },
++	{ 0x71, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 0 },
++	{ 0x72, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_9_10,
++	  FALSE, FALSE, 1 },
++	{ 0x73, TRUE, MtFeType_DvbS2, MtFeModMode_32Apsk, MtFeCodeRate_9_10,
++	  TRUE, FALSE, 1 },
++	{ 0x74, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0x75, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0x76, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 1 },
++	{ 0x77, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 1 },
++	{ 0x78, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0x79, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0x7A, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 1 },
++	{ 0x7B, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 1 },
++	{ 0x7C, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0x7D, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0x7E, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 1 },
++	{ 0x7F, FALSE, MtFeType_DvbS2, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 1 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0x80, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0x81, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0x82, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0x83, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0x84, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_13_45,
++	  FALSE, FALSE, 0 },
++	{ 0x85, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_13_45,
++	  TRUE, FALSE, 0 },
++	{ 0x86, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_9_20,
++	  FALSE, FALSE, 0 },
++	{ 0x87, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_9_20,
++	  TRUE, FALSE, 0 },
++	{ 0x88, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_11_20,
++	  FALSE, FALSE, 0 },
++	{ 0x89, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_11_20,
++	  TRUE, FALSE, 0 },
++	{ 0x8A, TRUE, MtFeType_DvbS2X, MtFeModMode_8Apsk_L, MtFeCodeRate_5_9,
++	  FALSE, FALSE, 0 },
++	{ 0x8B, TRUE, MtFeType_DvbS2X, MtFeModMode_8Apsk_L, MtFeCodeRate_5_9,
++	  TRUE, FALSE, 0 },
++	{ 0x8C, TRUE, MtFeType_DvbS2X, MtFeModMode_8Apsk_L, MtFeCodeRate_26_45,
++	  FALSE, FALSE, 0 },
++	{ 0x8D, TRUE, MtFeType_DvbS2X, MtFeModMode_8Apsk_L, MtFeCodeRate_26_45,
++	  TRUE, FALSE, 0 },
++	{ 0x8E, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_23_36,
++	  FALSE, FALSE, 0 },
++	{ 0x8F, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_23_36,
++	  TRUE, FALSE, 0 },
++	{ 0x90, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_25_36,
++	  FALSE, FALSE, 0 },
++	{ 0x91, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_25_36,
++	  TRUE, FALSE, 0 },
++	{ 0x92, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_13_18,
++	  FALSE, FALSE, 0 },
++	{ 0x93, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_13_18,
++	  TRUE, FALSE, 0 },
++	{ 0x94, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_1_2,
++	  FALSE, FALSE, 0 },
++	{ 0x95, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_1_2,
++	  TRUE, FALSE, 0 },
++	{ 0x96, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_8_15,
++	  FALSE, FALSE, 0 },
++	{ 0x97, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_8_15,
++	  TRUE, FALSE, 0 },
++	{ 0x98, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_5_9,
++	  FALSE, FALSE, 0 },
++	{ 0x99, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_5_9,
++	  TRUE, FALSE, 0 },
++	{ 0x9A, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_26_45,
++	  FALSE, FALSE, 0 },
++	{ 0x9B, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_26_45,
++	  TRUE, FALSE, 0 },
++	{ 0x9C, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_3_5,
++	  FALSE, FALSE, 0 },
++	{ 0x9D, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_3_5,
++	  TRUE, FALSE, 0 },
++	{ 0x9E, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_3_5,
++	  FALSE, FALSE, 0 },
++	{ 0x9F, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_3_5,
++	  TRUE, FALSE, 0 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0xA0, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_28_45,
++	  FALSE, FALSE, 0 },
++	{ 0xA1, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_28_45,
++	  TRUE, FALSE, 0 },
++	{ 0xA2, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_23_36,
++	  FALSE, FALSE, 0 },
++	{ 0xA3, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_23_36,
++	  TRUE, FALSE, 0 },
++	{ 0xA4, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 0 },
++	{ 0xA5, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk_L, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 0 },
++	{ 0xA6, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_25_36,
++	  FALSE, FALSE, 0 },
++	{ 0xA7, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_25_36,
++	  TRUE, FALSE, 0 },
++	{ 0xA8, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_13_18,
++	  FALSE, FALSE, 0 },
++	{ 0xA9, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_13_18,
++	  TRUE, FALSE, 0 },
++	{ 0xAA, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_7_9,
++	  FALSE, FALSE, 0 },
++	{ 0xAB, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_7_9,
++	  TRUE, FALSE, 0 },
++	{ 0xAC, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_77_90,
++	  FALSE, FALSE, 0 },
++	{ 0xAD, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_77_90,
++	  TRUE, FALSE, 0 },
++	{ 0xAE, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk_L, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 0 },
++	{ 0xAF, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk_L, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 0 },
++	{ 0xB0, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xB1, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xB2, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 0 },
++	{ 0xB3, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 0 },
++	{ 0xB4, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_11_15,
++	  FALSE, FALSE, 0 },
++	{ 0xB5, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_11_15,
++	  TRUE, FALSE, 0 },
++	{ 0xB6, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_7_9,
++	  FALSE, FALSE, 0 },
++	{ 0xB7, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_7_9,
++	  TRUE, FALSE, 0 },
++	{ 0xB8, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk_L, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 0 },
++	{ 0xB9, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk_L, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 0 },
++	{ 0xBA, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_11_15,
++	  FALSE, FALSE, 0 },
++	{ 0xBB, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_11_15,
++	  TRUE, FALSE, 0 },
++	{ 0xBC, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xBD, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xBE, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_7_9,
++	  FALSE, FALSE, 0 },
++	{ 0xBF, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0xC0, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xC1, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xC2, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_4_5,
++	  FALSE, FALSE, 0 },
++	{ 0xC3, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_4_5,
++	  TRUE, FALSE, 0 },
++	{ 0xC4, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xC5, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xC6, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_5_6,
++	  FALSE, FALSE, 0 },
++	{ 0xC7, TRUE, MtFeType_DvbS2X, MtFeModMode_64Apsk, MtFeCodeRate_5_6,
++	  TRUE, FALSE, 0 },
++	{ 0xC8, TRUE, MtFeType_DvbS2X, MtFeModMode_128Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 0 },
++	{ 0xC9, TRUE, MtFeType_DvbS2X, MtFeModMode_128Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 0 },
++	{ 0xCA, TRUE, MtFeType_DvbS2X, MtFeModMode_128Apsk, MtFeCodeRate_7_9,
++	  FALSE, FALSE, 0 },
++	{ 0xCB, TRUE, MtFeType_DvbS2X, MtFeModMode_128Apsk, MtFeCodeRate_7_9,
++	  TRUE, FALSE, 0 },
++	{ 0xCC, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_29_45, FALSE, FALSE, 0 },
++	{ 0xCD, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_29_45, TRUE, FALSE, 0 },
++	{ 0xCE, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 0 },
++	{ 0xCF, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 0 },
++	{ 0xD0, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_31_45, FALSE, FALSE, 0 },
++	{ 0xD1, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_31_45, TRUE, FALSE, 0 },
++	{ 0xD2, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 0 },
++	{ 0xD3, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 0 },
++	{ 0xD4, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_11_15, FALSE, FALSE, 0 },
++	{ 0xD5, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk_L,
++	  MtFeCodeRate_11_15, TRUE, FALSE, 0 },
++	{ 0xD6, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk, MtFeCodeRate_3_4,
++	  FALSE, FALSE, 0 },
++	{ 0xD7, TRUE, MtFeType_DvbS2X, MtFeModMode_256Apsk, MtFeCodeRate_3_4,
++	  TRUE, FALSE, 1 },
++	{ 0xD8, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_11_45,
++	  FALSE, FALSE, 1 },
++	{ 0xD9, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_11_45,
++	  TRUE, FALSE, 1 },
++	{ 0xDA, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_4_15,
++	  FALSE, FALSE, 1 },
++	{ 0xDB, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_4_15,
++	  TRUE, FALSE, 1 },
++	{ 0xDC, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_14_45,
++	  FALSE, FALSE, 1 },
++	{ 0xDD, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_14_45,
++	  TRUE, FALSE, 1 },
++	{ 0xDE, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_7_15,
++	  FALSE, FALSE, 1 },
++	{ 0xDF, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_7_15,
++	  TRUE, FALSE, 1 },
++	//   PLS Code,   Valid,  DVB Type, 		  Mod Mode, 			  Code Rate,			  Pilot,  Dummy Frames,  Frame Length
++	{ 0xE0, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_8_15,
++	  FALSE, FALSE, 1 },
++	{ 0xE1, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_8_15,
++	  TRUE, FALSE, 1 },
++	{ 0xE2, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 1 },
++	{ 0xE3, TRUE, MtFeType_DvbS2X, MtFeModMode_Qpsk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 1 },
++	{ 0xE4, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_7_15,
++	  FALSE, FALSE, 1 },
++	{ 0xE5, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_7_15,
++	  TRUE, FALSE, 1 },
++	{ 0xE6, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_8_15,
++	  FALSE, FALSE, 1 },
++	{ 0xE7, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_8_15,
++	  TRUE, FALSE, 1 },
++	{ 0xE8, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_26_45,
++	  FALSE, FALSE, 1 },
++	{ 0xE9, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_26_45,
++	  TRUE, FALSE, 1 },
++	{ 0xEA, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 1 },
++	{ 0xEB, TRUE, MtFeType_DvbS2X, MtFeModMode_8psk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 1 },
++	{ 0xEC, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_7_15,
++	  FALSE, FALSE, 1 },
++	{ 0xED, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_7_15,
++	  TRUE, FALSE, 1 },
++	{ 0xEE, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_8_15,
++	  FALSE, FALSE, 1 },
++	{ 0xEF, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_8_15,
++	  TRUE, FALSE, 1 },
++	{ 0xF0, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_26_45,
++	  FALSE, FALSE, 1 },
++	{ 0xF1, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_26_45,
++	  TRUE, FALSE, 1 },
++	{ 0xF2, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_3_5,
++	  FALSE, FALSE, 1 },
++	{ 0xF3, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_3_5,
++	  TRUE, FALSE, 1 },
++	{ 0xF4, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 1 },
++	{ 0xF5, TRUE, MtFeType_DvbS2X, MtFeModMode_16Apsk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 1 },
++	{ 0xF6, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_2_3,
++	  FALSE, FALSE, 1 },
++	{ 0xF7, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_2_3,
++	  TRUE, FALSE, 1 },
++	{ 0xF8, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_32_45,
++	  FALSE, FALSE, 1 },
++	{ 0xF9, TRUE, MtFeType_DvbS2X, MtFeModMode_32Apsk, MtFeCodeRate_32_45,
++	  TRUE, FALSE, 1 },
++	{ 0xFA, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xFB, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xFC, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xFD, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 },
++	{ 0xFE, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  FALSE, FALSE, 0 },
++	{ 0xFF, FALSE, MtFeType_DvbS2X, MtFeModMode_Undef, MtFeCodeRate_Undef,
++	  TRUE, FALSE, 0 }
++};
++
++static int rs6060_set_reg(struct m88rs6060_dev *dev, u8 reg, u8 data)
++{
++	return regmap_write(dev->tuner_regmap, reg, data);
++}
++
++static int rs6060_get_reg(struct m88rs6060_dev *dev, u8 reg)
++{
++	unsigned int val;
++	int ret;
++
++	ret = regmap_read(dev->tuner_regmap, reg, &val);
++	if (ret) {
++		dev_dbg(&dev->tuner_client->dev, "get reg %d fail=%d\n", reg,
++			ret);
++	}
++
++	return val;
++}
++
++static int m88rs6060_fireware_download(struct m88rs6060_dev *dev, u8 reg,
++				       const u8 *data, int len)
++{
++	struct i2c_adapter *i2c = dev->client->adapter;
++	int ret;
++	u8 buf[70];
++	struct i2c_msg msg = { .addr = dev->config.demod_adr,
++			       .flags = 0,
++			       .buf = buf,
++			       .len = len + 1 };
++
++	buf[0] = reg;
++	memcpy(&buf[1], data, len);
++
++	ret = i2c_transfer(i2c, &msg, 1);
++	if (ret != 1) {
++		dev_err(&dev->client->dev, "0x%02x (ret=%i, reg=0x%02x)\n",
++			dev->config.tuner_adr, ret, reg);
++		return -EREMOTEIO;
++	}
++
++	return 0;
++}
++
++static void m88rs6060_calc_PLS_gold_code(u8 *pNormalCode, u32 PLSGoldCode)
++{
++	struct PLS_Table_t {
++		u32 iIndex;
++		u8 PLSCode[3];
++	};
++
++	struct PLS_Table_t PLS_List[] = { { 0, { 0x01, 0x00, 0x00 } },
++					  { 5000, { 0x0d, 0xe0, 0x00 } },
++					  { 10000, { 0x51, 0x15, 0x00 } },
++					  { 15000, { 0xcf, 0xc9, 0x00 } },
++					  { 20000, { 0x67, 0x33, 0x03 } },
++					  { 25000, { 0x02, 0xc9, 0x02 } },
++					  { 30000, { 0xe5, 0xc6, 0x01 } },
++					  { 35000, { 0xdb, 0xc0, 0x03 } },
++					  { 40000, { 0x7c, 0x5f, 0x02 } },
++					  { 45000, { 0x8d, 0x65, 0x00 } },
++					  { 50000, { 0x14, 0x96, 0x00 } },
++					  { 55000, { 0xf7, 0x61, 0x03 } },
++					  { 60000, { 0xbc, 0x28, 0x00 } },
++					  { 65000, { 0x77, 0xa9, 0x01 } },
++					  { 70000, { 0xe7, 0x05, 0x01 } },
++					  { 75000, { 0x88, 0x85, 0x01 } },
++					  { 80000, { 0x2f, 0xbb, 0x02 } },
++					  { 85000, { 0xe1, 0x07, 0x00 } },
++					  { 90000, { 0xd5, 0x67, 0x01 } },
++					  { 95000, { 0x94, 0x37, 0x03 } },
++					  { 100000, { 0x57, 0x39, 0x02 } },
++					  { 105000, { 0xc7, 0x03, 0x00 } },
++					  { 110000, { 0xbf, 0x12, 0x00 } },
++					  { 115000, { 0x50, 0x0e, 0x00 } },
++					  { 120000, { 0xca, 0xc4, 0x00 } },
++					  { 125000, { 0x46, 0xc3, 0x00 } },
++					  { 130000, { 0x2f, 0xc6, 0x01 } },
++					  { 135000, { 0x7c, 0xe5, 0x01 } },
++					  { 140000, { 0xb9, 0x36, 0x01 } },
++					  { 145000, { 0x9d, 0xe5, 0x01 } },
++					  { 150000, { 0xc4, 0x32, 0x01 } },
++					  { 155000, { 0x13, 0xb3, 0x00 } },
++					  { 160000, { 0x0c, 0x9f, 0x02 } },
++					  { 165000, { 0xb2, 0xb5, 0x03 } },
++					  { 170000, { 0xac, 0x7e, 0x01 } },
++					  { 175000, { 0xb6, 0xa2, 0x01 } },
++					  { 180000, { 0xb6, 0x3e, 0x01 } },
++					  { 185000, { 0x17, 0x2c, 0x02 } },
++					  { 190000, { 0xd7, 0x2a, 0x02 } },
++					  { 195000, { 0x93, 0x61, 0x02 } },
++					  { 200000, { 0x67, 0x92, 0x02 } },
++					  { 205000, { 0x38, 0x07, 0x01 } },
++					  { 210000, { 0xb4, 0x5a, 0x01 } },
++					  { 215000, { 0xed, 0x31, 0x02 } },
++					  { 220000, { 0x9e, 0x4d, 0x02 } },
++					  { 225000, { 0x17, 0x08, 0x02 } },
++					  { 230000, { 0x37, 0xb9, 0x00 } },
++					  { 235000, { 0x2c, 0xed, 0x00 } },
++					  { 240000, { 0xe0, 0x64, 0x00 } },
++					  { 245000, { 0x90, 0x39, 0x01 } },
++					  { 250000, { 0x35, 0x0e, 0x01 } },
++					  { 255000, { 0x1c, 0x9e, 0x02 } },
++					  { 260000, { 0x58, 0x78, 0x00 } } };
++
++	u8 x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15,
++		x16, x17;
++	int i;
++	u8 tmp;
++
++	u32 ulPLSCode = 0, ulPLSIndex = 0;
++
++	int iPLSCnt = sizeof(PLS_List) / sizeof(struct PLS_Table_t),
++	    iPLSListIndex;
++	u8 iPLSCode[3];
++
++	ulPLSCode = PLSGoldCode;
++	iPLSListIndex = ulPLSCode / 5000;
++
++	if (iPLSListIndex > iPLSCnt - 1)
++		iPLSListIndex = iPLSCnt - 1;
++
++	ulPLSIndex = PLS_List[iPLSListIndex].iIndex;
++	iPLSCode[0] = PLS_List[iPLSListIndex].PLSCode[0];
++	iPLSCode[1] = PLS_List[iPLSListIndex].PLSCode[1];
++	iPLSCode[2] = PLS_List[iPLSListIndex].PLSCode[2];
++
++	x0 = (iPLSCode[0] >> 0) & 0x01;
++	x1 = (iPLSCode[0] >> 1) & 0x01;
++	x2 = (iPLSCode[0] >> 2) & 0x01;
++	x3 = (iPLSCode[0] >> 3) & 0x01;
++	x4 = (iPLSCode[0] >> 4) & 0x01;
++	x5 = (iPLSCode[0] >> 5) & 0x01;
++	x6 = (iPLSCode[0] >> 6) & 0x01;
++	x7 = (iPLSCode[0] >> 7) & 0x01;
++	x8 = (iPLSCode[1] >> 0) & 0x01;
++	x9 = (iPLSCode[1] >> 1) & 0x01;
++	x10 = (iPLSCode[1] >> 2) & 0x01;
++	x11 = (iPLSCode[1] >> 3) & 0x01;
++	x12 = (iPLSCode[1] >> 4) & 0x01;
++	x13 = (iPLSCode[1] >> 5) & 0x01;
++	x14 = (iPLSCode[1] >> 6) & 0x01;
++	x15 = (iPLSCode[1] >> 7) & 0x01;
++	x16 = (iPLSCode[2] >> 0) & 0x01;
++	x17 = (iPLSCode[2] >> 1) & 0x01;
++
++	for (i = ulPLSIndex; i <= ulPLSCode; i++) {
++		iPLSCode[0] = (x7 << 7) + (x6 << 6) + (x5 << 5) + (x4 << 4) +
++			      (x3 << 3) + (x2 << 2) + (x1 << 1) + (x0 << 0);
++		iPLSCode[1] = (x15 << 7) + (x14 << 6) + (x13 << 5) +
++			      (x12 << 4) + (x11 << 3) + (x10 << 2) + (x9 << 1) +
++			      (x8 << 0);
++		iPLSCode[2] = (x17 << 1) + x16;
++
++		tmp = (x0 ^ x7) & 0x01;
++		x0 = x1;
++		x1 = x2;
++		x2 = x3;
++		x3 = x4;
++		x4 = x5;
++		x5 = x6;
++		x6 = x7;
++		x7 = x8;
++		x8 = x9;
++		x9 = x10;
++		x10 = x11;
++		x11 = x12;
++		x12 = x13;
++		x13 = x14;
++		x14 = x15;
++		x15 = x16;
++		x16 = x17;
++		x17 = tmp;
++	}
++
++	pNormalCode[0] = iPLSCode[0];
++	pNormalCode[1] = iPLSCode[1];
++	pNormalCode[2] = iPLSCode[2];
++
++	return;
++}
++
++static int m88rs6060_get_gain(struct m88rs6060_dev *dev, u32 freq_MHz,
++			      s32 *p_gain)
++{
++	static s32 bb_list_dBm[16][16] = {
++		{ -5000, -4999, -4397, -4044, -3795, -3601, -3442, -3309, -3193,
++		  -3090, -2999, -2916, -2840, -2771, -2706, -2647 },
++		{ -2590, -2538, -2488, -2441, -2397, -2354, -2314, -2275, -2238,
++		  -2203, -2169, -2136, -2104, -2074, -2044, -2016 },
++		{ -1988, -1962, -1936, -1911, -1886, -1862, -1839, -1817, -1795,
++		  -1773, -1752, -1732, -1712, -1692, -1673, -1655 },
++		{ -1636, -1618, -1601, -1584, -1567, -1550, -1534, -1518, -1502,
++		  -1487, -1472, -1457, -1442, -1428, -1414, -1400 },
++		{ -1386, -1373, -1360, -1347, -1334, -1321, -1309, -1296, -1284,
++		  -1272, -1260, -1249, -1237, -1226, -1215, -1203 },
++		{ -1193, -1182, -1171, -1161, -1150, -1140, -1130, -1120, -1110,
++		  -1100, -1090, -1081, -1071, -1062, -1052, -1043 },
++		{ -1034, -1025, -1016, -1007, -999, -990, -982, -973, -965,
++		  -956, -948, -940, -932, -924, -916, -908 },
++		{ -900, -893, -885, -877, -870, -862, -855, -848, -840, -833,
++		  -826, -819, -812, -805, -798, -791 },
++		{ -784, -778, -771, -764, -758, -751, -745, -738, -732, -725,
++		  -719, -713, -706, -700, -694, -688 },
++		{ -682, -676, -670, -664, -658, -652, -647, -641, -635, -629,
++		  -624, -618, -612, -607, -601, -596 },
++		{ -590, -585, -580, -574, -569, -564, -558, -553, -548, -543,
++		  -538, -533, -528, -523, -518, -513 },
++		{ -508, -503, -498, -493, -488, -483, -479, -474, -469, -464,
++		  -460, -455, -450, -446, -441, -437 },
++		{ -432, -428, -423, -419, -414, -410, -405, -401, -397, -392,
++		  -388, -384, -379, -375, -371, -367 },
++		{ -363, -358, -354, -350, -346, -342, -338, -334, -330, -326,
++		  -322, -318, -314, -310, -306, -302 },
++		{ -298, -294, -290, -287, -283, -279, -275, -271, -268, -264,
++		  -260, -257, -253, -249, -246, -242 },
++		{ -238, -235, -231, -227, -224, -220, -217, -213, -210, -206,
++		  -203, -199, -196, -192, -189, -186 }
++
++	};
++
++	s32 BB_Power = 0;
++	u32 Total_Gain = 8000;
++	s32 delta = 0;
++
++	u8 reg5a, reg5f, reg77, reg76, reg3f;
++	u8 reg96 = 0;
++
++	u32 PGA2_cri_GS = 46, PGA2_crf_GS = 290, TIA_GS = 290;
++	u32 RF_GC = 1200, IF_GC = 1100, BB_GC = 300, PGA2_GC = 300,
++	    TIA_GC = 300;
++	u32 PGA2_cri = 0, PGA2_crf = 0;
++	u32 RFG = 0, IFG = 0, BBG = 0, PGA2G = 0, TIAG = 0;
++
++	u32 i = 0;
++
++	u32 RFGS[13] = { 0,   276, 278, 283, 272, 294, 296,
++			 292, 292, 299, 305, 292, 300 };
++	u32 IFGS[12] = {
++		0, 0, 232, 268, 266, 289, 295, 290, 291, 298, 304, 304
++	};
++	u32 BBGS[13] = { 0,   296, 297, 295, 298, 302, 293,
++			 292, 286, 294, 278, 298, 267 };
++
++	reg5a = rs6060_get_reg(dev, 0x5A);
++	RF_GC = reg5a & 0x0f;
++
++	reg5f = rs6060_get_reg(dev, 0x5F);
++	IF_GC = reg5f & 0x0f;
++
++	reg3f = rs6060_get_reg(dev, 0x3F);
++	TIA_GC = (reg3f >> 4) & 0x07;
++
++	reg77 = rs6060_get_reg(dev, 0x77);
++	BB_GC = (reg77 >> 4) & 0x0f;
++
++	reg76 = rs6060_get_reg(dev, 0x76);
++	PGA2_GC = reg76 & 0x3f;
++	PGA2_cri = PGA2_GC >> 2;
++	PGA2_crf = PGA2_GC & 0x03;
++
++	if (freq_MHz >= 1750) {
++		RFGS[1] = 240;
++		RFGS[2] = 260;
++		IFGS[2] = 200;
++		IFGS[3] = 245;
++		IFGS[4] = 255;
++	} else if (freq_MHz >= 1350) {
++		RFGS[12] = 285;
++	} else {
++		RFGS[1] = 310;
++		RFGS[2] = 293;
++		IFGS[2] = 270;
++		IFGS[3] = 290;
++		IFGS[4] = 280;
++		IFGS[11] = 320;
++	}
++
++	for (i = 0; i <= RF_GC; i++) {
++		RFG += RFGS[i];
++	}
++
++	for (i = 1; i <= IF_GC; i++) {
++		IFG += IFGS[i];
++	}
++
++	TIAG = TIA_GC * TIA_GS;
++
++	for (i = 0; i <= BB_GC; i++) {
++		BBG += BBGS[i];
++	}
++
++	PGA2G = PGA2_cri * PGA2_cri_GS + PGA2_crf * PGA2_crf_GS;
++	Total_Gain = RFG + IFG - TIAG + BBG + PGA2G;
++
++	if (freq_MHz >= 1750) {
++		delta = 800;
++	} else if (freq_MHz >= 1350) {
++		delta = 900;
++	} else {
++		delta = 1000;
++	}
++
++	reg96 = rs6060_get_reg(dev, 0x96);
++	BB_Power = bb_list_dBm[(reg96 >> 4) & 0x0f][reg96 & 0x0f];
++	*p_gain = Total_Gain - delta - BB_Power;
++
++	return 0;
++}
++
++static void rs6060_wakeup(struct m88rs6060_dev *dev)
++{
++	rs6060_set_reg(dev, 0x10, 0xfb);
++	rs6060_set_reg(dev, 0x11, 0x1);
++	rs6060_set_reg(dev, 0x7, 0x7d);
++	msleep(10);
++
++	return;
++}
++
++static void m88rs6060_hard_rest(struct m88rs6060_dev *dev)
++{
++	unsigned val;
++
++	rs6060_set_reg(dev, 0x04, 0x01);
++	rs6060_set_reg(dev, 0x04, 0x00);
++
++	regmap_read(dev->regmap, 0x04, &val);
++	val &= ~0x01;
++	regmap_write(dev->regmap, 0x04, val);
++
++	msleep(1);
++	rs6060_wakeup(dev);
++
++	regmap_read(dev->regmap, 0x08, &val);
++	regmap_write(dev->regmap, 0x08, (val | 0x01));
++
++	regmap_read(dev->regmap, 0x0b, &val);
++	regmap_write(dev->regmap, 0x0b, (val | 0x1));
++
++	regmap_read(dev->regmap, 0xb2, &val);
++	if (val == 0x1) {
++		regmap_write(dev->regmap, 0x00, 0x00);
++		regmap_write(dev->regmap, 0xb2, 0x00);
++	}
++
++	regmap_write(dev->regmap, 0x07, 0x80);
++	regmap_write(dev->regmap, 0x07, 0x00);
++	msleep(1);
++	regmap_read(dev->regmap, 0x08, &val);
++	regmap_write(dev->regmap, 0x8, (val | 0x1));
++
++	return;
++}
++
++static void rs6060_select_mclk(struct m88rs6060_dev *dev, u32 freq_MHz,
++			       u32 symbol_rate)
++{
++	u32 adc_freq_MHz[3] = { 96, 93, 99 };
++	u8 reg16_list[3] = { 96, 92, 100 }, reg15, reg16;
++	u32 offset_MHz[3];
++	u32 max_offset = 0;
++	int i = 0;
++	reg16 = 96;
++	dev->mclk = 96000;
++	if (symbol_rate >= 46000) {
++		dev->mclk = 99000;
++		reg16 = 100;
++	} else {
++		for (i = 0; i < 3; i++) {
++			offset_MHz[i] = freq_MHz % adc_freq_MHz[i];
++
++			if (offset_MHz[i] > (adc_freq_MHz[i] / 2))
++				offset_MHz[i] = adc_freq_MHz[i] - offset_MHz[i];
++
++			if (offset_MHz[i] > max_offset) {
++				max_offset = offset_MHz[i];
++				reg16 = reg16_list[i];
++				dev->mclk = adc_freq_MHz[i] * 1000;
++			}
++		}
++	}
++	reg15 = rs6060_get_reg(dev, 0x15);
++	reg15 &= ~0x1;
++	rs6060_set_reg(dev, 0x15, reg15);
++	rs6060_set_reg(dev, 0x16, reg16);
++	rs6060_set_reg(dev, 0x17, 0xc1);
++	rs6060_set_reg(dev, 0x17, 0x81);
++
++	msleep(5);
++
++	return;
++}
++
++static void rs6060_set_ts_mclk(struct m88rs6060_dev *dev, u32 mclk)
++{
++	u8 reg15, reg16, reg1D, reg1E, reg1F, tmp;
++	u8 sm, f0 = 0, f1 = 0, f2 = 0, f3 = 0;
++	u16 pll_div_fb, N;
++	u32 div;
++
++	reg15 = rs6060_get_reg(dev, 0x15);
++	reg16 = rs6060_get_reg(dev, 0x16);
++	reg1D = rs6060_get_reg(dev, 0x1d);
++
++	if (dev->config.ts_mode != MtFeTsOutMode_Serial) {
++		if (reg16 == 92) {
++			tmp = 93;
++		} else if (reg16 == 100) {
++			tmp = 99;
++		} else // if(reg16 == 96)
++		{
++			tmp = 96;
++		}
++
++		mclk *= tmp;
++		mclk /= 96;
++	}
++
++	pll_div_fb = (reg15 & 0x01) << 8;
++	pll_div_fb += reg16;
++	pll_div_fb += 32;
++
++	div = 9000 * pll_div_fb * 4;
++	div /= mclk;
++
++	if (dev->config.ts_mode == MtFeTsOutMode_Serial) {
++		if (div <= 32) {
++			N = 2;
++
++			f0 = 0;
++			f1 = div / N;
++			f2 = div - f1;
++			f3 = 0;
++		} else if (div <= 64) {
++			N = 4;
++
++			f0 = div / N;
++			f1 = (div - f0) / (N - 1);
++			f2 = (div - f0 - f1) / (N - 2);
++			f3 = div - f0 - f1 - f2;
++		} else {
++			N = 4;
++
++			f0 = 16;
++			f1 = 16;
++			f2 = 16;
++			f3 = 16;
++		}
++
++		if (f0 == 16)
++			f0 = 0;
++		else if ((f0 < 8) && (f0 != 0))
++			f0 = 8;
++
++		if (f1 == 16)
++			f1 = 0;
++		else if ((f1 < 8) && (f1 != 0))
++			f1 = 8;
++
++		if (f2 == 16)
++			f2 = 0;
++		else if ((f2 < 8) && (f2 != 0))
++			f2 = 8;
++
++		if (f3 == 16)
++			f3 = 0;
++		else if ((f3 < 8) && (f3 != 0))
++			f3 = 8;
++	} else {
++		if (div <= 32) {
++			N = 2;
++
++			f0 = 0;
++			f1 = div / N;
++			f2 = div - f1;
++			f3 = 0;
++		} else if (div <= 48) {
++			N = 3;
++
++			f0 = div / N;
++			f1 = (div - f0) / (N - 1);
++			f2 = div - f0 - f1;
++			f3 = 0;
++		} else if (div <= 64) {
++			N = 4;
++
++			f0 = div / N;
++			f1 = (div - f0) / (N - 1);
++			f2 = (div - f0 - f1) / (N - 2);
++			f3 = div - f0 - f1 - f2;
++		} else {
++			N = 4;
++
++			f0 = 16;
++			f1 = 16;
++			f2 = 16;
++			f3 = 16;
++		}
++
++		if (f0 == 16)
++			f0 = 0;
++		else if ((f0 < 9) && (f0 != 0))
++			f0 = 9;
++
++		if (f1 == 16)
++			f1 = 0;
++		else if ((f1 < 9) && (f1 != 0))
++			f1 = 9;
++
++		if (f2 == 16)
++			f2 = 0;
++		else if ((f2 < 9) && (f2 != 0))
++			f2 = 9;
++
++		if (f3 == 16)
++			f3 = 0;
++		else if ((f3 < 9) && (f3 != 0))
++			f3 = 9;
++	}
++
++	sm = N - 1;
++
++	reg1D &= ~0x03;
++	reg1D |= sm;
++	reg1D |= 0x80;
++
++	reg1E = ((f3 << 4) + f2) & 0xFF;
++	reg1F = ((f1 << 4) + f0) & 0xFF;
++
++	rs6060_set_reg(dev, 0x1d, reg1D);
++	rs6060_set_reg(dev, 0x1e, reg1E);
++	rs6060_set_reg(dev, 0x1f, reg1F);
++	msleep(1);
++}
++static int rs6060_get_ts_mclk(struct m88rs6060_dev *dev, u32 *mclk)
++{
++	u8 reg15, reg16, reg1D, reg1E, reg1F;
++	u8 sm, f0, f1, f2, f3;
++	u16 pll_div_fb, N;
++	u32 MCLK_KHz;
++
++	*mclk = MT_FE_MCLK_KHZ;
++
++	reg15 = rs6060_get_reg(dev, 0x15);
++	reg16 = rs6060_get_reg(dev, 0x16);
++	reg1D = rs6060_get_reg(dev, 0x1d);
++	reg1E = rs6060_get_reg(dev, 0x1e);
++	reg1F = rs6060_get_reg(dev, 0x1f);
++
++	MCLK_KHz = 9000;
++	pll_div_fb = reg15 & 0x01;
++	pll_div_fb <<= 8;
++	pll_div_fb += reg16;
++
++	MCLK_KHz *= (pll_div_fb + 32);
++
++	sm = reg1D & 0x03;
++
++	f3 = (reg1E >> 4) & 0x0F;
++	f2 = reg1E & 0x0F;
++	f1 = (reg1F >> 4) & 0x0F;
++	f0 = reg1F & 0x0F;
++
++	if (f3 == 0)
++		f3 = 16;
++	if (f2 == 0)
++		f2 = 16;
++	if (f1 == 0)
++		f1 = 16;
++	if (f0 == 0)
++		f0 = 16;
++	N = f2 + f1;
++
++	switch (sm) {
++	case 3:
++		N = f3 + f2 + f1 + f0;
++		break;
++	case 2:
++		N = f2 + f1 + f0;
++		break;
++	case 1:
++	case 0:
++	default:
++		N = f2 + f1;
++		break;
++	}
++
++	MCLK_KHz *= 4;
++	MCLK_KHz /= N;
++
++	*mclk = MCLK_KHz;
++
++	return 0;
++}
++static int rs6060_set_pll_freq(struct m88rs6060_dev *dev, u32 tuner_freq_MHz)
++{
++	u32 fcry_KHz, ulNDiv1, ulNDiv2;
++	u8 refDiv1, refDiv2, ucLoDiv1, ucLomod1, ucLoDiv2, ucLomod2, div1m,
++		div1p5m, lodiv_en_opt_div2;
++	u8 reg27, reg29;
++	u8 tmp;
++
++	fcry_KHz = dev->config.clk / 1000; /*tuner crycle */
++	if (fcry_KHz == 27000) {
++		div1m = 19;
++		div1p5m = 10;
++		rs6060_set_reg(dev, 0x41, 0x82);
++	} else if (fcry_KHz == 24000) {
++		div1m = 16;
++		div1p5m = 8;
++		rs6060_set_reg(dev, 0x41, 0x8a);
++
++	} else {
++		div1m = 19;
++		div1p5m = 10;
++		rs6060_set_reg(dev, 0x41, 0x82);
++	}
++	if (tuner_freq_MHz >= 1550) {
++		ucLoDiv1 = 2;
++		ucLomod1 = 0;
++		refDiv1 = div1m;
++		ucLoDiv2 = 2;
++		ucLomod2 = 0;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 1380) {
++		ucLoDiv1 = 3;
++		ucLomod1 = 16;
++		refDiv1 = div1p5m;
++		ucLoDiv2 = 2;
++		ucLomod2 = 0;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 1070) {
++		ucLoDiv1 = 3;
++		ucLomod1 = 16;
++		refDiv1 = div1p5m;
++		ucLoDiv2 = 3;
++		ucLomod2 = 16;
++		refDiv2 = div1p5m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 1000) {
++		ucLoDiv1 = 4;
++		ucLomod1 = 64;
++		refDiv1 = div1m;
++		ucLoDiv2 = 4;
++		ucLomod2 = 64;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 775) {
++		ucLoDiv1 = 4;
++		ucLomod1 = 64;
++		refDiv1 = div1m;
++		ucLoDiv2 = 4;
++		ucLomod2 = 64;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 700) {
++		ucLoDiv1 = 6;
++		ucLomod1 = 48;
++		refDiv1 = div1p5m;
++		ucLoDiv2 = 4;
++		ucLomod2 = 64;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 520) {
++		ucLoDiv1 = 6;
++		ucLomod1 = 48;
++		refDiv1 = div1p5m;
++		ucLoDiv2 = 6;
++		ucLomod2 = 48;
++		refDiv2 = div1p5m;
++		lodiv_en_opt_div2 = 0;
++	} else if (tuner_freq_MHz >= 375) {
++		ucLoDiv1 = 8;
++		ucLomod1 = 96;
++		refDiv1 = div1m;
++		ucLoDiv2 = 8;
++		ucLomod2 = 96;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 0;
++	} else {
++		ucLoDiv1 = 12;
++		ucLomod1 = 80;
++		refDiv1 = div1m;
++		ucLoDiv2 = 12;
++		ucLomod2 = 80;
++		refDiv2 = div1m;
++		lodiv_en_opt_div2 = 1;
++	}
++
++	ulNDiv1 =
++		((tuner_freq_MHz * 1000 * ucLoDiv1) * (refDiv1 + 8) / fcry_KHz -
++		 1024) /
++		2;
++	ulNDiv2 =
++		((tuner_freq_MHz * 1000 * ucLoDiv2) * (refDiv2 + 8) / fcry_KHz -
++		 1024) /
++		2;
++
++	reg27 = (((ulNDiv1 >> 8) & 0x0F) + ucLomod1) & 0x7F;
++
++	rs6060_set_reg(dev, 0x27, reg27);
++	rs6060_set_reg(dev, 0x28, (u8)(ulNDiv1 & 0xFF));
++
++	reg29 = (((ulNDiv2 >> 8) & 0x0F) + ucLomod2) & 0x7f;
++
++	rs6060_set_reg(dev, 0x29, reg29);
++	rs6060_set_reg(dev, 0x2a, (u8)(ulNDiv2 & 0xFF));
++
++	refDiv1 = refDiv1 & 0x1F;
++	rs6060_set_reg(dev, 0x36, refDiv1);
++
++	rs6060_set_reg(dev, 0x39, refDiv2);
++
++	tmp = rs6060_get_reg(dev, 0x3d);
++	if (lodiv_en_opt_div2 == 1)
++		tmp |= 0x80;
++	else
++		tmp &= 0x7F;
++
++	rs6060_set_reg(dev, 0x3d, tmp);
++
++	if (refDiv1 == 19) {
++		rs6060_set_reg(dev, 0x2c, 0x02);
++	} else {
++		rs6060_set_reg(dev, 0x2c, 0x00);
++	}
++
++	return 0;
++}
++
++static int rs6060_set_bb(struct m88rs6060_dev *dev, u32 symbol_rate_KSs,
++			 s32 lpf_offset_KHz)
++{
++	u32 f3dB;
++	u8 reg40;
++
++	f3dB = symbol_rate_KSs * 9 / 14 + 2000;
++	f3dB += lpf_offset_KHz;
++	f3dB = clamp_val(f3dB, 6000U, 43000U);
++	reg40 = f3dB / 1000;
++
++	return rs6060_set_reg(dev, 0x40, reg40);
++}
++
++static void m88res6060_set_ts_mode(struct m88rs6060_dev *dev)
++{
++	unsigned tmp, val = 0;
++	regmap_read(dev->regmap, 0x0b, &val);
++	val &= ~0x1;
++	regmap_write(dev->regmap, 0x0b, val);
++
++	regmap_read(dev->regmap, 0xfd, &tmp);
++	if (dev->config.ts_mode == MtFeTsOutMode_Parallel) {
++		tmp &= ~0x01;
++		tmp &= ~0x04;
++
++		regmap_write(dev->regmap, 0xfa, 0x01);
++		regmap_write(dev->regmap, 0xf1, 0x60);
++		regmap_write(dev->regmap, 0xfa, 0x00);
++	} else if (dev->config.ts_mode == MtFeTsOutMode_Serial) {
++		tmp &= ~0x01;
++		tmp |= 0x04;
++	} else {
++		tmp |= 0x01;
++		tmp &= ~0x04;
++
++		regmap_write(dev->regmap, 0xfa, 0x01);
++		regmap_write(dev->regmap, 0xf1, 0x60);
++		regmap_write(dev->regmap, 0xfa, 0x00);
++	}
++
++	tmp &= ~0xb8;
++	tmp |= 0x42;
++	tmp |= 0x80;
++	regmap_write(dev->regmap, 0xfd, tmp);
++
++	val = 0;
++	if (dev->config.ts_mode != MtFeTsOutMode_Serial) {
++		tmp = MT_FE_ENHANCE_TS_PIN_LEVEL_PARALLEL_CI;
++
++		val |= tmp & 0x03;
++		val |= (tmp << 2) & 0x0c;
++		val |= (tmp << 4) & 0x30;
++		val |= (tmp << 6) & 0xc0;
++	} else {
++		val = 0x00;
++	}
++
++	regmap_write(dev->regmap, 0x0a, val);
++
++	regmap_read(dev->regmap, 0x0b, &tmp);
++	if (dev->config.ts_pinswitch) {
++		tmp |= 0x20;
++	} else {
++		tmp &= ~0x20;
++	}
++	tmp |= 0x1;
++	regmap_write(dev->regmap, 0x0b, tmp);
++	regmap_read(dev->regmap, 0x0c, &tmp);
++	regmap_write(dev->regmap, 0xf4, 0x01);
++	tmp &= ~0x80;
++	regmap_write(dev->regmap, 0x0c, tmp);
++
++	return;
++}
++
++static int m88rs6060_set_frontend(struct dvb_frontend *fe)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
++	int ret;
++	u32 symbol_rate_KSs;
++	unsigned tmp, tmp1;
++	static const struct reg_sequence reset_buf[] = { { 0x7, 0x80 },
++							 { 0x7, 0x0 }
++
++	};
++	u32 realFreq;
++	s16 lpf_offset_KHz = 0;
++	u32 target_mclk = 144000;
++	u32 u32tmp;
++	s32 s32tmp;
++	u32 pls_mode, pls_code;
++	u8 pls[] = { 0x1, 0, 0 }, isi;
++	u8 buf[2];
++	int i = 0, j = 0;
++	unsigned tsid[16];
++	bool mis = false;
++
++	dev_dbg(&dev->client->dev,
++		"delivery_system=%u modulation=%u frequency=%u bandwidth_hz=%u symbol_rate=%u inversion=%u stream_id=%d\n",
++		c->delivery_system, c->modulation, c->frequency,
++		c->bandwidth_hz, c->symbol_rate, c->inversion, c->stream_id);
++
++	if (!dev->warm) {
++		ret = -EAGAIN;
++		goto err;
++	}
++
++	symbol_rate_KSs = c->symbol_rate / 1000;
++	realFreq = c->frequency;
++	/*reset */
++	ret = regmap_multi_reg_write(dev->regmap, reset_buf, 2);
++	if (ret)
++		goto err;
++
++	msleep(2);
++	/*clear ts */
++	regmap_write(dev->regmap, 0xf5, 0x00);
++	regmap_read(dev->regmap, 0xfd, &tmp);
++	regmap_read(dev->regmap, 0xb2, &tmp);
++	if (tmp == 0x01) {
++		regmap_write(dev->regmap, 0x00, 0x0);
++		regmap_write(dev->regmap, 0xb2, 0x0);
++	}
++	if (c->symbol_rate < 5000000) {
++		lpf_offset_KHz = 3000;
++		realFreq = c->frequency + 3000;
++	}
++
++	regmap_write(dev->regmap, 0x6, 0xe0);
++	rs6060_select_mclk(dev, realFreq / 1000, symbol_rate_KSs);
++	if (dev->mclk == 93000)
++		regmap_write(dev->regmap, 0xa0, 0x42);
++	else if (dev->mclk == 96000)
++		regmap_write(dev->regmap, 0xa0, 0x44);
++	else if (dev->mclk == 99000)
++		regmap_write(dev->regmap, 0xa0, 0x46);
++	else if (dev->mclk == 110250)
++		regmap_write(dev->regmap, 0xa0, 0x4e);
++	else
++		regmap_write(dev->regmap, 0xa0, 0x44);
++
++	regmap_read(dev->regmap, 0xfd, &tmp);
++	rs6060_set_ts_mclk(dev, target_mclk);
++	regmap_write(dev->regmap, 0x6, 0x0);
++	msleep(10);
++
++	rs6060_set_reg(dev, 0x5b, 0x4c);
++	rs6060_set_reg(dev, 0x5c, 0x54);
++	rs6060_set_reg(dev, 0x60, 0x4b);
++	//set tuner pll
++	ret = rs6060_set_pll_freq(dev, (realFreq + 500) / 1000);
++	if (ret)
++		goto err;
++	ret = rs6060_set_bb(dev, symbol_rate_KSs, lpf_offset_KHz);
++	if (ret)
++		goto err;
++
++	rs6060_set_reg(dev, 0x00, 0x1);
++	rs6060_set_reg(dev, 0x00, 0x0);
++
++	regmap_write(dev->regmap, 0xb2, 0x1);
++	regmap_write(dev->regmap, 0x00, 0x1);
++
++	for (i = 0; i < (sizeof(rs6060_reg_tbl_def) / 2); i++)
++		ret = regmap_write(dev->regmap, rs6060_reg_tbl_def[i].reg,
++				   rs6060_reg_tbl_def[i].val);
++
++	if (ret)
++		goto err;
++
++	if ((symbol_rate_KSs > 47100) && (symbol_rate_KSs < 47500)) {
++		regmap_write(dev->regmap, 0xe6, 0x00);
++		regmap_write(dev->regmap, 0xe7, 0x03);
++	}
++
++	regmap_read(dev->regmap, 0x4d, &tmp);
++	tmp &= (~0x2);
++	regmap_write(dev->regmap, 0x4d, tmp);
++
++	regmap_read(dev->regmap, 0x08, &tmp);
++	regmap_write(dev->regmap, 0x08, tmp & 0x7f);
++
++	regmap_read(dev->regmap, 0xc9, &tmp);
++	regmap_write(dev->regmap, 0xc9, tmp | 0x8);
++
++	if (symbol_rate_KSs <= 3000)
++		tmp = 0x20;
++	else if (symbol_rate_KSs <= 10000)
++		tmp = 0x10;
++	else
++		tmp = 0x6;
++
++	regmap_write(dev->regmap, 0xc3, 0x8);
++	regmap_write(dev->regmap, 0xc8, tmp);
++	regmap_write(dev->regmap, 0xc4, 0x8);
++	regmap_write(dev->regmap, 0xc7, 0x0);
++
++	u32tmp = ((symbol_rate_KSs << 15) + (dev->mclk / 4)) / (dev->mclk / 2);
++
++	regmap_write(dev->regmap, 0x61, (u8)(u32tmp & 0xff));
++	regmap_write(dev->regmap, 0x62, (u8)((u32tmp >> 8) & 0xff));
++
++	regmap_read(dev->regmap, 0x76, &tmp);
++	regmap_write(dev->regmap, 0x76, 0x30);
++
++	regmap_write(dev->regmap, 0x22, pls[0]);
++	regmap_write(dev->regmap, 0x23, pls[1]);
++	regmap_write(dev->regmap, 0x24, pls[2]);
++
++	regmap_read(dev->regmap, 0x08, &tmp);
++	switch (c->delivery_system) {
++	case SYS_DVBS:
++		tmp = (tmp & 0xfb) | 0x40;
++		regmap_write(dev->regmap, 0x08, tmp);
++		regmap_write(dev->regmap, 0xe0, 0xf8);
++		break;
++	case SYS_DVBS2:
++		tmp |= 0x44;
++		regmap_write(dev->regmap, 0x08, tmp);
++		break;
++	default:
++		tmp &= 0xbb;
++		regmap_write(dev->regmap, 0x08, tmp);
++		regmap_write(dev->regmap, 0xe0, 0xf8);
++	}
++
++	//	regmap_write(dev->regmap, 0x08, 3);
++	//	regmap_write(dev->regmap, 0xe0, 0xf8);
++
++	s32tmp = 0x10000 * lpf_offset_KHz;
++	s32tmp = (2 * s32tmp + dev->mclk) / (2 * dev->mclk);
++	buf[0] = (s32tmp >> 0) & 0xff;
++	buf[1] = (s32tmp >> 8) & 0xff;
++	//ret = regmap_bulk_write(dev->regmap, 0x5e, buf, 2);
++	ret = regmap_write(dev->regmap, 0x5e, buf[0]);
++	ret = regmap_write(dev->regmap, 0x5f, buf[1]);
++	if (ret)
++		goto err;
++
++	ret = regmap_write(dev->regmap, 0x00, 0x00);
++	if (ret)
++		goto err;
++
++	ret = regmap_write(dev->regmap, 0xb2, 0x00);
++	if (ret)
++		goto err;
++
++	//	ret = regmap_write(dev->regmap, 0xfe, 0xe1);
++	//	if (ret)
++	//		goto err;
++
++	//	ret = regmap_write(dev->regmap, 0xea, 0x4);
++	//if (ret)
++	//		goto err;
++	if (c->stream_id != NO_STREAM_ID_FILTER) {
++		isi = c->stream_id & 0xff;
++		pls_mode = (c->stream_id >> 26) & 3;
++		pls_code = (c->stream_id >> 8) & 0x3ffff;
++		if (!pls_mode && !pls_code)
++			pls_code = 1;
++	} else {
++		isi = 0;
++		pls_mode = 0;
++		pls_code = 1;
++	}
++
++	if (c->scrambling_sequence_index) {
++		pls_mode = 1;
++		pls_code = c->scrambling_sequence_index;
++	}
++
++	if (pls_mode)
++		m88rs6060_calc_PLS_gold_code(pls, pls_code);
++	else {
++		pls[0] = pls_code & 0xff;
++		pls[1] = (pls_code >> 8) & 0xff;
++		pls[2] = (pls_code >> 16) & 3;
++	}
++
++	dev_dbg(&dev->client->dev, "isi = %d", isi);
++	dev_dbg(&dev->client->dev, "pls mode %d, code %d\n", pls_mode,
++		pls_code);
++	dev_dbg(&dev->client->dev, "pls buf =%*ph \n", 3, pls);
++
++	ret = regmap_bulk_write(dev->regmap, 0x22, pls, 3);
++
++	rs6060_set_reg(dev, 0x5b, 0xcc);
++	rs6060_set_reg(dev, 0x5c, 0xf4);
++	rs6060_set_reg(dev, 0x60, 0xcb);
++
++	for (i = 0; i < 150; i++) {
++		regmap_read(dev->regmap, 0x8, &tmp);
++		regmap_read(dev->regmap, 0xd, &tmp1);
++
++		if ((tmp1 == 0x8f) || (tmp1 == 0xf7))
++			break;
++		msleep(20);
++	}
++
++	if (tmp1 == 0x8f) {
++		regmap_read(dev->regmap, 0x89, &tmp);
++		regmap_read(dev->regmap, 0xca, &tmp1);
++		tmp &= 0x80;
++		regmap_write(dev->regmap, 0xca,
++			     (u8)((tmp1 & 0xf7) | (tmp >> 4) | 0x02));
++		regmap_write(dev->regmap, 0xfa, 0x00);
++		regmap_write(dev->regmap, 0xf0, 0x00);
++		regmap_write(dev->regmap, 0xf0, 0x03);
++
++		msleep(20);
++		regmap_read(dev->regmap, 0xf1, &tmp1);
++		tmp1 &= 0x1f;
++		dev_dbg(&dev->client->dev, "ISI cnt = %d \n", tmp1);
++		for (j = 0; j < tmp1; j++) {
++			regmap_write(dev->regmap, 0xf2, j);
++			regmap_read(dev->regmap, 0xf3, &tsid[j]);
++			dev_dbg(&dev->client->dev, "ISI = %d \n", tsid[j]);
++		}
++		for (j = 0; j < tmp1; j++)
++			if (tsid[j] == isi) {
++				mis = true;
++				break;
++			}
++
++		if (mis)
++			regmap_write(dev->regmap, 0xf5, isi);
++		else
++			regmap_write(dev->regmap, 0xf5, tsid[0]);
++	}
++
++	dev->TsClockChecked = true;
++
++	return 0;
++
++err:
++	dev_dbg(&dev->client->dev, "failed = %d", ret);
++	return ret;
++}
++
++static enum dvbfe_algo m88rs6060_get_algo(struct dvb_frontend *fe)
++{
++	return DVBFE_ALGO_HW;
++}
++
++static int m88rs6060_init(struct dvb_frontend *fe)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
++
++	/*warm state */
++	dev->warm = true;
++
++	//
++	c->cnr.len = 1;
++	c->cnr.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++	c->post_bit_error.len = 1;
++	c->post_bit_error.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++	c->post_bit_count.len = 1;
++	c->post_bit_count.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++
++	dev_dbg(&dev->client->dev, "%s finished\n", __func__);
++
++	return 0;
++}
++static int m88rs6060_get_sym_rate(struct m88rs6060_dev *dev, u32 *sym_rate_KSs)
++{
++	u16 tmp;
++	u32 sym_rate_tmp;
++	unsigned val_0x6d, val_0x6e;
++
++	regmap_read(dev->regmap, 0x6d, &val_0x6d);
++	regmap_read(dev->regmap, 0x6e, &val_0x6e);
++
++	tmp = (u16)((val_0x6e << 8) | val_0x6d);
++	sym_rate_tmp = tmp * dev->mclk;
++	sym_rate_tmp /= (1 << 16);
++	*sym_rate_KSs = sym_rate_tmp;
++
++	return 0;
++}
++static int m88rs6060_get_channel_info(struct m88rs6060_dev *dev,
++				      struct MT_FE_CHAN_INFO_DVBS2 *p_info)
++{
++	unsigned tmp, val_0x17, val_0x18, ucPLSCode;
++
++	regmap_read(dev->regmap, 0x08, &tmp);
++	if ((tmp & 0x08) == 0x08) { //dvbs2 signal
++
++		p_info->type = MtFeType_DvbS2;
++
++		regmap_write(dev->regmap, 0x8a, 0x01);
++		regmap_read(dev->regmap, 0x17, &val_0x17);
++		p_info->is_dummy_frame = (val_0x17 & 0x40) ? true : false;
++
++		regmap_read(dev->regmap, 0x18, &val_0x18);
++		tmp = (val_0x18 >> 5) & 0x07;
++		switch (tmp) {
++		case 1:
++			p_info->mod_mode = MtFeModMode_8psk;
++			break;
++		case 2:
++			p_info->mod_mode = MtFeModMode_16Apsk;
++			break;
++		case 3:
++			p_info->mod_mode = MtFeModMode_32Apsk;
++			break;
++		case 4:
++			p_info->mod_mode = MtFeModMode_64Apsk;
++			break;
++		case 5:
++			p_info->mod_mode = MtFeModMode_128Apsk;
++			break;
++		case 6:
++		case 7:
++			p_info->mod_mode = MtFeModMode_256Apsk;
++			break;
++		case 0:
++		default:
++			p_info->mod_mode = MtFeModMode_Qpsk;
++			break;
++		}
++		p_info->iVcmCycle = val_0x18 & 0x1F;
++		regmap_read(dev->regmap, 0x19, &ucPLSCode);
++		p_info->iPlsCode = ucPLSCode;
++		p_info->type = mPLSInfoTable[ucPLSCode].mDvbType;
++
++		if (mPLSInfoTable[ucPLSCode].bValid) {
++			p_info->mod_mode = mPLSInfoTable[ucPLSCode].mModMode;
++			p_info->code_rate = mPLSInfoTable[ucPLSCode].mCodeRate;
++			p_info->is_dummy_frame =
++				mPLSInfoTable[ucPLSCode].bDummyFrame;
++			p_info->is_pilot_on = mPLSInfoTable[ucPLSCode].bPilotOn;
++			p_info->iFrameLength =
++				mPLSInfoTable[ucPLSCode].iFrameLength;
++
++		} else {
++			//p_info->mod_mode = mPLSInfoTable[ucPLSCode].mModMode;
++			p_info->code_rate = mPLSInfoTable[ucPLSCode].mCodeRate;
++			//p_info->is_dummy_frame = mPLSInfoTable[ucPLSCode].bDummyFrame;
++			p_info->is_pilot_on = mPLSInfoTable[ucPLSCode].bPilotOn;
++			p_info->iFrameLength =
++				mPLSInfoTable[ucPLSCode].iFrameLength;
++		}
++
++		regmap_read(dev->regmap, 0x89, &tmp);
++		p_info->is_spectrum_inv = ((tmp & 0x80) != 0) ?
++						  MtFeSpectrum_Inversion :
++						  MtFeSpectrum_Normal;
++
++		regmap_read(dev->regmap, 0x76, &tmp);
++		tmp &= 0x03;
++		if (p_info->type == MtFeType_DvbS2X) { //dvbs2x
++			switch (tmp) {
++			case 0:
++				p_info->roll_off = MtFeRollOff_0p15;
++				break;
++			case 1:
++				p_info->roll_off = MtFeRollOff_0p10;
++				break;
++			case 2:
++				p_info->roll_off = MtFeRollOff_0p05;
++				break;
++			default:
++				p_info->roll_off = MtFeRollOff_Undef;
++				break;
++			}
++		} else { //dvbs2
++			switch (tmp) {
++			case 0:
++				p_info->roll_off = MtFeRollOff_0p35;
++				break;
++			case 1:
++				p_info->roll_off = MtFeRollOff_0p25;
++				break;
++			case 2:
++				p_info->roll_off = MtFeRollOff_0p20;
++				break;
++			default:
++				p_info->roll_off = MtFeRollOff_Undef;
++				break;
++			}
++		}
++	} else {
++		p_info->type = MtFeType_DvbS;
++		p_info->mod_mode = MtFeModMode_Qpsk;
++
++		regmap_read(dev->regmap, 0xe6, &tmp);
++		tmp = (u8)tmp >> 5;
++		switch (tmp) {
++		case 0:
++			p_info->code_rate = MtFeCodeRate_7_8;
++			break;
++		case 1:
++			p_info->code_rate = MtFeCodeRate_5_6;
++			break;
++		case 2:
++			p_info->code_rate = MtFeCodeRate_3_4;
++			break;
++		case 3:
++			p_info->code_rate = MtFeCodeRate_2_3;
++			break;
++		case 4:
++			p_info->code_rate = MtFeCodeRate_1_2;
++			break;
++		default:
++			p_info->code_rate = MtFeCodeRate_Undef;
++			break;
++		}
++		p_info->is_pilot_on = false;
++		regmap_read(dev->regmap, 0xe0, &tmp);
++		p_info->is_spectrum_inv = ((tmp & 0x40) != 0) ?
++						  MtFeSpectrum_Inversion :
++						  MtFeSpectrum_Normal;
++		p_info->roll_off = MtFeRollOff_0p35;
++		p_info->is_dummy_frame = false;
++		p_info->iVcmCycle = -1;
++		p_info->iPlsCode = 0;
++		p_info->iFrameLength = 0;
++	}
++
++	return 0;
++}
++static int rs6060_select_xm(struct m88rs6060_dev *dev, u32 *xm_KHz)
++{
++	u32 symbol_rate = 0;
++	u8 reg16;
++	u32 offset_KHz[8] = { 0 };
++	u32 max_offset = 0;
++	u8 i, xm_line, xm_cnt = 5;
++	u32 xm_list_KHz[3][8] = { { 96000, 102400, 107162, 109714, 115200,
++				    128000, 135529, 144000 },
++				  { 93000, 99200, 111600, 117473, 124000,
++				    139500, 144000, 148800 },
++				  { 99000, 105600, 108000, 110511, 118800,
++				    132000, 144000, 148500 } };
++
++	m88rs6060_get_sym_rate(dev, &symbol_rate);
++	xm_cnt = sizeof(xm_list_KHz) / sizeof(u32);
++	xm_cnt /= 3;
++	// C = (symbol * 1.35 / 2 + 2) * 1.1;
++	symbol_rate *= 135;
++	symbol_rate /= 200;
++	symbol_rate += 2000;
++	symbol_rate *= 110;
++	symbol_rate /= 100;
++
++	reg16 = rs6060_get_reg(dev, 0x16);
++
++	if (reg16 == 92) {
++		xm_line = 1;
++	} else if (reg16 == 100) {
++		xm_line = 2;
++	} else { //if(reg16 == 96)
++		xm_line = 0;
++	}
++
++	for (i = 0; i < xm_cnt; i++) {
++		if (*xm_KHz > xm_list_KHz[xm_line][i]) {
++			continue;
++		}
++		offset_KHz[i] = (dev->frequecy % xm_list_KHz[xm_line][i]);
++		if (offset_KHz[i] > (xm_list_KHz[xm_line][i] / 2))
++			offset_KHz[i] = xm_list_KHz[xm_line][i] - offset_KHz[i];
++		if (offset_KHz[i] > symbol_rate) {
++			*xm_KHz = xm_list_KHz[xm_line][i];
++			break;
++		}
++		if (offset_KHz[i] > max_offset) {
++			max_offset = offset_KHz[i];
++			*xm_KHz = xm_list_KHz[xm_line][i];
++		}
++	}
++
++	if (i == xm_cnt) {
++		*xm_KHz = xm_list_KHz[xm_line][xm_cnt - 1];
++	}
++
++	return 0;
++}
++
++static int m88rs6060_set_clock_ratio(struct m88rs6060_dev *dev)
++{
++	unsigned mod_fac, tmp1, tmp2, val;
++	u32 input_datarate, locked_sym_rate_KSs;
++	u32 Mclk_KHz = 96000, iSerialMclkHz;
++	u16 divid_ratio = 0;
++	struct MT_FE_CHAN_INFO_DVBS2 p_info;
++
++	m88rs6060_get_sym_rate(dev, &locked_sym_rate_KSs);
++
++	regmap_read(dev->regmap, 0x9d, &val);
++	regmap_write(dev->regmap, 0x9d, val | 0x08);
++
++	m88rs6060_get_channel_info(dev, &p_info);
++
++	if (p_info.type == MtFeType_DvbS2 || p_info.type == MtFeType_DvbS2X) {
++		dev_dbg(&dev->client->dev, "iPlsCode = 0x%02X\n",
++			p_info.iPlsCode);
++		switch (p_info.mod_mode) {
++		case MtFeModMode_8psk:
++		case MtFeModMode_8Apsk_L:
++			mod_fac = 3;
++			break;
++		case MtFeModMode_16Apsk:
++		case MtFeModMode_16Apsk_L:
++			mod_fac = 4;
++			break;
++		case MtFeModMode_32Apsk:
++		case MtFeModMode_32Apsk_L:
++			mod_fac = 5;
++			break;
++		case MtFeModMode_64Apsk:
++		case MtFeModMode_64Apsk_L:
++			mod_fac = 6;
++			break;
++		case MtFeModMode_128Apsk:
++		case MtFeModMode_128Apsk_L:
++			mod_fac = 7;
++			break;
++		case MtFeModMode_256Apsk:
++		case MtFeModMode_256Apsk_L:
++			mod_fac = 8;
++			break;
++		case MtFeModMode_Qpsk:
++		default:
++			mod_fac = 2;
++			break;
++		}
++		switch (p_info.code_rate) {
++		case MtFeCodeRate_1_4:
++			input_datarate = locked_sym_rate_KSs * mod_fac / 8 / 4;
++			break;
++		case MtFeCodeRate_1_3:
++			input_datarate = locked_sym_rate_KSs * mod_fac / 8 / 3;
++			break;
++		case MtFeCodeRate_2_5:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 2 / 8 / 5;
++			break;
++		case MtFeCodeRate_1_2:
++			input_datarate = locked_sym_rate_KSs * mod_fac / 8 / 2;
++			break;
++		case MtFeCodeRate_3_5:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 3 / 8 / 5;
++			break;
++		case MtFeCodeRate_2_3:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 2 / 8 / 3;
++			break;
++		case MtFeCodeRate_3_4:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 3 / 8 / 4;
++			break;
++		case MtFeCodeRate_4_5:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 4 / 8 / 5;
++			break;
++		case MtFeCodeRate_5_6:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 5 / 8 / 6;
++			break;
++		case MtFeCodeRate_8_9:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 8 / 8 / 9;
++			break;
++		case MtFeCodeRate_9_10:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 9 / 8 / 10;
++			break;
++		case MtFeCodeRate_5_9:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 5 / 8 / 9;
++			break;
++		case MtFeCodeRate_7_9:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 7 / 8 / 9;
++			break;
++		case MtFeCodeRate_4_15:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 4 / 8 / 15;
++			break;
++		case MtFeCodeRate_7_15:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 7 / 8 / 15;
++			break;
++		case MtFeCodeRate_8_15:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 8 / 8 / 15;
++			break;
++		case MtFeCodeRate_11_15:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 11 / 8 / 15;
++			break;
++		case MtFeCodeRate_13_18:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 13 / 8 / 18;
++			break;
++		case MtFeCodeRate_9_20:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 9 / 8 / 20;
++			break;
++		case MtFeCodeRate_11_20:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 11 / 8 / 20;
++			break;
++		case MtFeCodeRate_23_36:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 23 / 8 / 36;
++			break;
++		case MtFeCodeRate_25_36:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 25 / 8 / 36;
++			break;
++		case MtFeCodeRate_11_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 11 / 8 / 45;
++			break;
++		case MtFeCodeRate_13_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 13 / 8 / 45;
++			break;
++		case MtFeCodeRate_14_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 14 / 8 / 45;
++			break;
++		case MtFeCodeRate_26_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 26 / 8 / 45;
++			break;
++		case MtFeCodeRate_28_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 28 / 8 / 45;
++			break;
++		case MtFeCodeRate_29_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 29 / 8 / 45;
++			break;
++		case MtFeCodeRate_31_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 31 / 8 / 45;
++			break;
++		case MtFeCodeRate_32_45:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 32 / 8 / 45;
++			break;
++		case MtFeCodeRate_77_90:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 77 / 8 / 90;
++			break;
++		default:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 2 / 8 / 3;
++			break;
++		}
++
++		rs6060_get_ts_mclk(dev, &Mclk_KHz);
++		if (dev->config.ts_mode == MtFeTsOutMode_Serial) {
++			u32 target_mclk = Mclk_KHz;
++			input_datarate *= 8;
++
++			target_mclk = input_datarate;
++			rs6060_select_xm(dev, &target_mclk);
++			if (target_mclk != Mclk_KHz) {
++				regmap_write(dev->regmap, 0x06, 0xe0);
++				rs6060_set_ts_mclk(dev, target_mclk);
++				regmap_write(dev->regmap, 0x06, 0x00);
++			}
++
++			rs6060_get_ts_mclk(dev, &iSerialMclkHz);
++			if (iSerialMclkHz > 116000)
++				regmap_write(dev->regmap, 0x0a, 0x01);
++			else
++				regmap_write(dev->regmap, 0x0a, 0x00);
++		} else {
++			iSerialMclkHz = input_datarate * 49 / 5;
++			input_datarate = input_datarate * 105 / 100;
++			if (iSerialMclkHz > 115200)
++				iSerialMclkHz = 144000;
++			else if (iSerialMclkHz > 96000)
++				iSerialMclkHz = 115200;
++			else if (iSerialMclkHz > 72000)
++				iSerialMclkHz = 96000;
++			else
++				iSerialMclkHz = 72000;
++			if (input_datarate < 6000)
++				input_datarate = 6000;
++			if (input_datarate != 0)
++				divid_ratio = (u16)(Mclk_KHz / input_datarate);
++			else
++				divid_ratio = 0xff;
++			dev_dbg(&dev->client->dev,
++				"MClk_KHz = %d,divid_ratio = %d \n", Mclk_KHz,
++				divid_ratio);
++
++			if (divid_ratio < 8)
++				divid_ratio = 8;
++			if (dev->config.ts_mode == MtFeTsOutMode_Common) {
++				if (divid_ratio > 27)
++					divid_ratio = 27;
++				if ((divid_ratio == 14) || (divid_ratio == 15))
++					divid_ratio = 13;
++				if ((divid_ratio == 19) || (divid_ratio == 20))
++					divid_ratio = 18;
++			} else {
++				if (divid_ratio > 24)
++					divid_ratio = 24;
++				if ((divid_ratio == 12) || (divid_ratio == 13))
++					divid_ratio = 11;
++				if ((divid_ratio == 19) || (divid_ratio == 20))
++					divid_ratio = 18;
++			}
++			tmp1 = (u8)((divid_ratio / 2) - 1);
++			tmp2 = DIV_ROUND_UP(divid_ratio, 2) - 1;
++			tmp1 &= 0x3f;
++			tmp2 &= 0x3f;
++			val = (tmp1 >> 2) & 0x0f;
++			regmap_update_bits(dev->regmap, 0xfe, 0x0f, val);
++			val = (u8)(((tmp1 & 0x3) << 6) | tmp2);
++			regmap_write(dev->regmap, 0xea, val);
++		}
++	} else { //dvbs
++		mod_fac = 2;
++		switch (p_info.code_rate) {
++		case MtFeCodeRate_1_2:
++			input_datarate = locked_sym_rate_KSs * mod_fac / 2 / 8;
++			break;
++		case MtFeCodeRate_2_3:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 2 / 3 / 8;
++			break;
++		case MtFeCodeRate_3_4:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 3 / 4 / 8;
++			break;
++		case MtFeCodeRate_5_6:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 5 / 6 / 8;
++			break;
++		case MtFeCodeRate_7_8:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 7 / 8 / 8;
++			break;
++		default:
++			input_datarate =
++				locked_sym_rate_KSs * mod_fac * 3 / 4 / 8;
++			break;
++		}
++		rs6060_get_ts_mclk(dev, &Mclk_KHz);
++
++		if (dev->config.ts_mode == MtFeTsOutMode_Serial) {
++			u32 target_mclk = Mclk_KHz;
++			input_datarate *= 8;
++
++			//	target_mclk = input_datarate;
++			rs6060_select_xm(dev, &target_mclk);
++			if (target_mclk != Mclk_KHz) {
++				regmap_write(dev->regmap, 0x06, 0xe0);
++				rs6060_set_ts_mclk(dev, target_mclk);
++				regmap_write(dev->regmap, 0x06, 0x00);
++			}
++
++			rs6060_get_ts_mclk(dev, &iSerialMclkHz);
++			if (iSerialMclkHz > 116000)
++				regmap_write(dev->regmap, 0x0a, 0x01);
++			else
++				regmap_write(dev->regmap, 0x0a, 0x00);
++
++		} else {
++			iSerialMclkHz = input_datarate * 46 / 5;
++			input_datarate = input_datarate * 105 / 100;
++
++			if (iSerialMclkHz > 72000)
++				iSerialMclkHz = 96000;
++			else
++				iSerialMclkHz = 72000;
++
++			if (input_datarate < 6000)
++				input_datarate = 6000;
++			if (input_datarate != 0)
++				divid_ratio = (u16)(Mclk_KHz / input_datarate);
++			else
++				divid_ratio = 0xff;
++			if (divid_ratio < 8)
++				divid_ratio = 8;
++			if (dev->config.ts_mode == MtFeTsOutMode_Common) {
++				if (divid_ratio > 27)
++					divid_ratio = 27;
++			} else {
++				if (divid_ratio > 24)
++					divid_ratio = 24;
++			}
++			tmp1 = (u8)((divid_ratio / 2) - 1);
++			tmp2 = DIV_ROUND_UP(divid_ratio, 2) - 1;
++
++			tmp1 &= 0x3f;
++			tmp2 &= 0x3f;
++			val = (tmp1 >> 2) & 0x0f;
++			regmap_update_bits(dev->regmap, 0xfe, 0x0f, val);
++			val = (u8)(((tmp1 & 0x3) << 6) | tmp2);
++			regmap_write(dev->regmap, 0xea, val);
++		}
++	}
++	return 0;
++}
++static int m88rs6060_read_status(struct dvb_frontend *fe,
++				 enum fe_status *status)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
++	int ret, i, itmp;
++	unsigned int utmp;
++	u8 buf[3];
++	s32 gain;
++	u16 temp;
++	dev_dbg(&dev->client->dev, "%s\n", __func__);
++
++	*status = 0;
++
++	if (!dev->warm) {
++		ret = -EAGAIN;
++		goto err;
++	}
++	switch (c->delivery_system) {
++	case SYS_DVBS:
++		ret = regmap_read(dev->regmap, 0x0d, &utmp);
++		if (ret)
++			goto err;
++
++		if ((utmp & 0xf7) == 0xf7)
++			*status = FE_HAS_SIGNAL | FE_HAS_CARRIER |
++				  FE_HAS_VITERBI | FE_HAS_SYNC | FE_HAS_LOCK;
++		break;
++	case SYS_DVBS2:
++		ret = regmap_read(dev->regmap, 0x0d, &utmp);
++		if (ret)
++			goto err;
++
++		if ((utmp & 0x8f) == 0x8f)
++			*status = FE_HAS_SIGNAL | FE_HAS_CARRIER |
++				  FE_HAS_VITERBI | FE_HAS_SYNC | FE_HAS_LOCK;
++		break;
++	default:
++		dev_dbg(&dev->client->dev, "invalid delivery_system\n");
++		ret = -EINVAL;
++		goto err;
++	}
++
++	dev->fe_status = *status;
++	dev_dbg(&dev->client->dev, "lock=%02x status=%02x\n", utmp, *status);
++
++	if ((!dev->config.ts_autoclock) && (dev->fe_status & FE_HAS_LOCK) &&
++	    (dev->TsClockChecked)) {
++		dev->TsClockChecked = false;
++		dev->frequecy = c->frequency;
++		m88rs6060_set_clock_ratio(dev);
++	}
++
++	/*power of rf signal */
++	m88rs6060_get_gain(dev, c->frequency / 1000, &gain);
++	c->strength.len = 2;
++	c->strength.stat[0].scale = FE_SCALE_DECIBEL;
++	c->strength.stat[0].svalue = -gain * 10;
++
++	c->strength.stat[1].scale = FE_SCALE_RELATIVE;
++	c->strength.stat[1].svalue = (100 + (-gain / 100)) * 656;
++
++	c->cnr.len = 1;
++	c->cnr.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++
++	if (dev->fe_status & FE_HAS_VITERBI) {
++		unsigned int cnr, noise, signal, noise_tot, signal_tot;
++
++		cnr = 0;
++		/* more iterations for more accurate estimation */
++#define M88rs6060_SNR_ITERATIONS 10
++
++		switch (c->delivery_system) {
++		case SYS_DVBS:
++			itmp = 0;
++
++			for (i = 0; i < M88rs6060_SNR_ITERATIONS; i++) {
++				ret = regmap_read(dev->regmap, 0xff, &utmp);
++				if (ret)
++					goto err;
++
++				itmp += utmp;
++			}
++			temp = (u16)(itmp / 80);
++
++			if (temp > 32)
++				temp = 32;
++			if (temp > 1)
++				cnr = (mes_loge[temp - 1] * 10) / 23;
++			else
++				cnr = 0;
++			break;
++		case SYS_DVBS2:
++			noise_tot = 0;
++			signal_tot = 0;
++
++			for (i = 0; i < M88rs6060_SNR_ITERATIONS; i++) {
++				ret = regmap_bulk_read(dev->regmap, 0x8c, buf,
++						       3);
++				if (ret)
++					goto err;
++
++				noise = buf[1] << 6; /* [13:6] */
++				noise |= buf[0] & 0x3f; /*  [5:0] */
++				noise >>= 2;
++				signal = buf[2] * buf[2];
++				signal >>= 1;
++
++				noise_tot += noise;
++				signal_tot += signal;
++			}
++
++			noise = noise_tot / M88rs6060_SNR_ITERATIONS;
++			signal = signal_tot / M88rs6060_SNR_ITERATIONS;
++			if (signal == 0)
++				cnr = 0;
++			else if (noise == 0)
++				cnr = 19;
++			else if (signal > noise) {
++				itmp = signal / noise;
++				if (itmp > 80)
++					itmp = 80;
++				cnr = mes_log10[itmp - 1];
++			} else if (signal < noise) {
++				itmp = noise / signal;
++				if (itmp > 80)
++					itmp = 80;
++				cnr = mes_log10[itmp - 1];
++			}
++			break;
++		default:
++			dev_dbg(&dev->client->dev, "invalid delivery_system\n");
++			ret = -EINVAL;
++			goto err;
++		}
++
++		c->cnr.len = 2;
++		c->cnr.stat[0].scale = FE_SCALE_DECIBEL;
++		c->cnr.stat[0].svalue = cnr;
++		c->cnr.stat[1].scale = FE_SCALE_RELATIVE;
++		c->cnr.stat[1].uvalue = (cnr / 100) * 328;
++		if (c->cnr.stat[1].uvalue > 0xffff)
++			c->cnr.stat[1].uvalue = 0xffff;
++	}
++
++	/* BER */
++	if (dev->fe_status & FE_HAS_LOCK) {
++		unsigned int utmp, post_bit_error, post_bit_count;
++
++		switch (c->delivery_system) {
++		case SYS_DVBS:
++
++			ret = regmap_read(dev->regmap, 0xd5, &utmp);
++			if (ret)
++				goto err;
++
++			/* measurement ready? */
++			if (!(utmp & 0x10)) {
++				ret = regmap_bulk_read(dev->regmap, 0xd6, buf,
++						       2);
++				if (ret)
++					goto err;
++
++				post_bit_error = buf[1] << 8 | buf[0] << 0;
++				post_bit_count = 0x800000;
++				dev->post_bit_error += post_bit_error;
++				dev->post_bit_count += post_bit_count;
++				dev->dvbv3_ber = post_bit_error;
++
++				/* restart measurement */
++				ret = regmap_write(dev->regmap, 0xd5, 0x82);
++				if (ret)
++					goto err;
++			}
++			break;
++		case SYS_DVBS2:
++			ret = regmap_bulk_read(dev->regmap, 0xd5, buf, 3);
++			if (ret)
++				goto err;
++			//dev_info(&dev->client->dev,"buf =%*ph\n",3,buf);
++			utmp = buf[2] << 16 | buf[1] << 8 | buf[0] << 0;
++
++			/* enough data? */
++			if (utmp > 4000) {
++				ret = regmap_bulk_read(dev->regmap, 0xf7, buf,
++						       2);
++				if (ret)
++					goto err;
++
++				post_bit_error = buf[1] << 8 | buf[0] << 0;
++				post_bit_count = 32 * utmp; /* TODO: FEC */
++				dev->post_bit_error += post_bit_error;
++				dev->post_bit_count += post_bit_count;
++				dev->dvbv3_ber = post_bit_error;
++
++				/* restart measurement */
++				ret = regmap_write(dev->regmap, 0xd1, 0x01);
++				if (ret)
++					goto err;
++
++				ret = regmap_write(dev->regmap, 0xf9, 0x01);
++				if (ret)
++					goto err;
++
++				ret = regmap_write(dev->regmap, 0xf9, 0x00);
++				if (ret)
++					goto err;
++
++				ret = regmap_write(dev->regmap, 0xd1, 0x00);
++				if (ret)
++					goto err;
++			}
++			break;
++		default:
++			dev_dbg(&dev->client->dev, "invalid delivery_system\n");
++			ret = -EINVAL;
++			goto err;
++		}
++
++		c->post_bit_error.stat[0].scale = FE_SCALE_COUNTER;
++		c->post_bit_error.stat[0].uvalue = dev->post_bit_error;
++
++		c->post_bit_count.stat[0].scale = FE_SCALE_COUNTER;
++		c->post_bit_count.stat[0].uvalue = dev->post_bit_count;
++	} else {
++		c->post_bit_error.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++		c->post_bit_count.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
++	}
++
++	c->post_bit_error.len = 1;
++	c->post_bit_count.len = 1;
++
++	return 0;
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int m88rs6060_read_snr(struct dvb_frontend *fe, u16 *snr)
++{
++	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
++	int i;
++
++	*snr = 0;
++	for (i = 0; i < p->cnr.len; i++)
++		if (p->cnr.stat[i].scale == FE_SCALE_RELATIVE)
++			*snr = (u16)p->cnr.stat[i].uvalue;
++
++	return 0;
++}
++
++static int m88rs6060_read_ber(struct dvb_frontend *fe, u32 *ber)
++{
++	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
++
++	if (p->post_bit_error.stat[0].scale == FE_SCALE_COUNTER &&
++	    p->post_bit_count.stat[0].scale == FE_SCALE_COUNTER)
++		*ber = (u32)p->post_bit_count.stat[0].uvalue ?
++			       (u32)p->post_bit_error.stat[0].uvalue /
++				       (u32)p->post_bit_count.stat[0].uvalue :
++			       0;
++
++	return 0;
++}
++
++static int m88rs6060_read_signal_strength(struct dvb_frontend *fe,
++					  u16 *strength)
++{
++	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
++	int i;
++
++	*strength = 0;
++	for (i = 0; i < p->strength.len; i++)
++		if (p->strength.stat[i].scale == FE_SCALE_RELATIVE)
++			*strength = (u16)p->strength.stat[i].uvalue;
++
++	return 0;
++}
++
++static int m88rs6060_set_voltage(struct dvb_frontend *fe,
++				 enum fe_sec_voltage voltage)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	int ret;
++	u8 utmp;
++	bool voltage_sel, lnb_power;
++
++	switch (voltage) {
++	case SEC_VOLTAGE_18:
++		voltage_sel = 1;
++		lnb_power = 1;
++		break;
++	case SEC_VOLTAGE_13:
++		voltage_sel = 0;
++		lnb_power = 1;
++		break;
++	case SEC_VOLTAGE_OFF:
++		voltage_sel = 0;
++		lnb_power = 0;
++		break;
++	}
++	utmp = lnb_power << 1 | voltage_sel << 0;
++	ret = regmap_update_bits(dev->regmap, 0xa2, 0x03, utmp);
++	if (ret)
++		goto err;
++
++	return 0;
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int m88rs6060_set_tone(struct dvb_frontend *fe,
++			      enum fe_sec_tone_mode fe_sec_tone_mode)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	int ret;
++	u8 utmp, tone, reg_a1_mask;
++
++	dev_dbg(&dev->client->dev, "fe_sec_tone_mode=%d\n", fe_sec_tone_mode);
++
++	if (!dev->warm) {
++		ret = -EAGAIN;
++		goto err;
++	}
++	if ((dev->config.num % 2) && (dev->config.disable_22k))
++		//for 6909se tuner 1,3,5,7 can not output 22k
++		return 0;
++	switch (fe_sec_tone_mode) {
++	case SEC_TONE_ON:
++		tone = 0;
++		reg_a1_mask = 0x47;
++		break;
++	case SEC_TONE_OFF:
++		tone = 1;
++		reg_a1_mask = 0x00;
++		break;
++	default:
++		dev_dbg(&dev->client->dev, "invalid fe_sec_tone_mode\n");
++		ret = -EINVAL;
++		goto err;
++	}
++
++	utmp = tone << 7 | dev->config.envelope_mode << 5;
++	ret = regmap_write_bits(dev->regmap, 0xa2, 0xe0, utmp);
++	if (ret)
++		goto err;
++
++	utmp = 1 << 2;
++	ret = regmap_write_bits(dev->regmap, 0xa1, reg_a1_mask, utmp);
++	if (ret)
++		goto err;
++
++	return 0;
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int
++m88rs6060_diseqc_send_master_cmd(struct dvb_frontend *fe,
++				 struct dvb_diseqc_master_cmd *diseqc_cmd)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	int ret;
++	u8 utmp;
++	unsigned long timeout;
++
++	dev_dbg(&dev->client->dev, "msg=%*ph\n", diseqc_cmd->msg_len,
++		diseqc_cmd->msg);
++
++	if (!dev->warm) {
++		ret = -EAGAIN;
++		goto err;
++	}
++
++	if (diseqc_cmd->msg_len < 3 || diseqc_cmd->msg_len > 6) {
++		ret = -EINVAL;
++		goto err;
++	}
++
++	utmp = dev->config.envelope_mode << 5;
++	ret = regmap_write_bits(dev->regmap, 0xa2, 0xe0, utmp);
++	if (ret)
++		goto err;
++
++	ret = regmap_bulk_write(dev->regmap, 0xa3, diseqc_cmd->msg,
++				diseqc_cmd->msg_len);
++	if (ret)
++		goto err;
++
++	ret = regmap_write(dev->regmap, 0xa1,
++			   (diseqc_cmd->msg_len - 1) << 3 | 0x07);
++	if (ret)
++		goto err;
++
++		/* wait DiSEqC TX ready */
++#define SEND_MASTER_CMD_TIMEOUT 120
++	timeout = jiffies + msecs_to_jiffies(SEND_MASTER_CMD_TIMEOUT);
++
++	/* DiSEqC message period is 13.5 ms per byte */
++	utmp = diseqc_cmd->msg_len * 13500;
++	usleep_range(utmp - 4000, utmp);
++
++	for (utmp = 1; !time_after(jiffies, timeout) && utmp;) {
++		unsigned int val;
++		ret = regmap_read(dev->regmap, 0xa1, &val);
++		utmp = val;
++		if (ret)
++			goto err;
++		utmp = (utmp >> 6) & 0x1;
++	}
++
++	if (utmp == 0) {
++		dev_dbg(&dev->client->dev, "diseqc tx took %u ms\n",
++			jiffies_to_msecs(jiffies) - (jiffies_to_msecs(timeout) -
++						     SEND_MASTER_CMD_TIMEOUT));
++	} else {
++		dev_err(&dev->client->dev, "diseqc tx timeout\n");
++
++		ret = regmap_write_bits(dev->regmap, 0xa1, 0xc0, 0x40);
++		if (ret)
++			goto err;
++	}
++
++	ret = regmap_write_bits(dev->regmap, 0xa2, 0xc0, 0x80);
++	if (ret)
++		goto err;
++
++	if (utmp == 1) {
++		ret = -ETIMEDOUT;
++		goto err;
++	}
++
++	return 0;
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int m88rs6060_diseqc_send_burst(struct dvb_frontend *fe,
++				       enum fe_sec_mini_cmd fe_sec_mini_cmd)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	int ret;
++	u8 utmp, burst;
++	unsigned long timeout;
++
++	dev_dbg(&dev->client->dev, "fe_sec_mini_cmd=%d\n", fe_sec_mini_cmd);
++
++	if (!dev->warm) {
++		ret = -EAGAIN;
++		goto err;
++	}
++
++	utmp = dev->config.envelope_mode << 5;
++	ret = regmap_write_bits(dev->regmap, 0xa2, 0xe0, utmp);
++	if (ret)
++		goto err;
++
++	switch (fe_sec_mini_cmd) {
++	case SEC_MINI_A:
++		burst = 0x02;
++		break;
++	case SEC_MINI_B:
++		burst = 0x01;
++		break;
++	default:
++		dev_dbg(&dev->client->dev, "invalid fe_sec_mini_cmd\n");
++		ret = -EINVAL;
++		goto err;
++	}
++
++	ret = regmap_write(dev->regmap, 0xa1, burst);
++	if (ret)
++		goto err;
++
++		/* wait DiSEqC TX ready */
++#define SEND_BURST_TIMEOUT 40
++	timeout = jiffies + msecs_to_jiffies(SEND_BURST_TIMEOUT);
++
++	/* DiSEqC ToneBurst period is 12.5 ms */
++	usleep_range(8500, 12500);
++
++	for (utmp = 1; !time_after(jiffies, timeout) && utmp;) {
++		unsigned int val;
++		ret = regmap_read(dev->regmap, 0xa1, &val);
++		utmp = val;
++		if (ret)
++			goto err;
++		utmp = (utmp >> 6) & 0x1;
++	}
++
++	if (utmp == 0) {
++		dev_dbg(&dev->client->dev, "diseqc tx took %u ms\n",
++			jiffies_to_msecs(jiffies) - (jiffies_to_msecs(timeout) -
++						     SEND_BURST_TIMEOUT));
++	} else {
++		dev_dbg(&dev->client->dev, "diseqc tx timeout\n");
++
++		ret = regmap_write_bits(dev->regmap, 0xa1, 0xc0, 0x40);
++		if (ret)
++			goto err;
++	}
++
++	ret = regmap_write_bits(dev->regmap, 0xa2, 0xc0, 0x80);
++	if (ret)
++		goto err;
++
++	if (utmp == 1) {
++		ret = -ETIMEDOUT;
++		goto err;
++	}
++
++	return 0;
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int m88rs6060_tune(struct dvb_frontend *fe, bool re_tune,
++			  unsigned int mode_flags, unsigned int *delay,
++			  enum fe_status *status)
++{
++	int r = 0;
++
++	*delay = HZ / 2;
++	if (re_tune) {
++		r = m88rs6060_set_frontend(fe);
++		if (r)
++			return r;
++	}
++
++	r = m88rs6060_read_status(fe, status);
++	if (r)
++		return r;
++
++	if (*status & FE_HAS_LOCK)
++		return 0;
++
++	return 0;
++}
++static int m88rs6060_get_frontend(struct dvb_frontend *fe,
++				  struct dtv_frontend_properties *p)
++{
++	struct m88rs6060_dev *dev = fe->demodulator_priv;
++	struct MT_FE_CHAN_INFO_DVBS2 p_info;
++
++	m88rs6060_get_channel_info(dev, &p_info);
++
++	switch (p_info.mod_mode) {
++	case MtFeModMode_8psk:
++		p->modulation = PSK_8;
++		break;
++	case MtFeModMode_16Apsk:
++		p->modulation = APSK_16;
++		break;
++	case MtFeModMode_32Apsk:
++		p->modulation = APSK_32;
++		break;
++	case MtFeModMode_64Apsk:
++		p->modulation = APSK_64;
++		break;
++	case MtFeModMode_Qpsk:
++	default:
++		p->modulation = QPSK;
++		break;
++	}
++	switch (p_info.code_rate) {
++	case MtFeCodeRate_1_4:
++		p->fec_inner = FEC_1_4;
++		break;
++	case MtFeCodeRate_1_3:
++		p->fec_inner = FEC_1_3;
++		break;
++	case MtFeCodeRate_2_5:
++		p->fec_inner = FEC_2_5;
++		break;
++	case MtFeCodeRate_1_2:
++		p->fec_inner = FEC_1_2;
++		break;
++	case MtFeCodeRate_3_5:
++		p->fec_inner = FEC_3_5;
++		break;
++	case MtFeCodeRate_2_3:
++		p->fec_inner = FEC_2_3;
++		break;
++	case MtFeCodeRate_3_4:
++		p->fec_inner = FEC_3_4;
++		break;
++	case MtFeCodeRate_4_5:
++		p->fec_inner = FEC_4_5;
++		break;
++	case MtFeCodeRate_5_6:
++		p->fec_inner = FEC_5_6;
++		break;
++	case MtFeCodeRate_7_8:
++		p->fec_inner = FEC_7_8;
++		break;
++	case MtFeCodeRate_8_9:
++		p->fec_inner = FEC_8_9;
++		break;
++	case MtFeCodeRate_9_10:
++		p->fec_inner = FEC_9_10;
++		break;
++	case MtFeCodeRate_5_9:
++		p->fec_inner = FEC_5_9;
++		break;
++	case MtFeCodeRate_7_9:
++		p->fec_inner = FEC_7_9;
++		break;
++	case MtFeCodeRate_4_15:
++		p->fec_inner = FEC_4_15;
++		break;
++	case MtFeCodeRate_7_15:
++		p->fec_inner = FEC_7_15;
++		break;
++	case MtFeCodeRate_8_15:
++		p->fec_inner = FEC_8_15;
++		break;
++	case MtFeCodeRate_11_15:
++		p->fec_inner = FEC_11_15;
++		break;
++	case MtFeCodeRate_13_18:
++		p->fec_inner = FEC_13_18;
++		break;
++	case MtFeCodeRate_9_20:
++		p->fec_inner = FEC_9_20;
++		break;
++	case MtFeCodeRate_11_20:
++		p->fec_inner = FEC_11_20;
++		break;
++	case MtFeCodeRate_23_36:
++		p->fec_inner = FEC_23_36;
++		break;
++	case MtFeCodeRate_25_36:
++		p->fec_inner = FEC_25_36;
++		break;
++	case MtFeCodeRate_11_45:
++		p->fec_inner = FEC_11_45;
++		break;
++	case MtFeCodeRate_13_45:
++		p->fec_inner = FEC_13_45;
++		break;
++	case MtFeCodeRate_14_45:
++		p->fec_inner = FEC_14_45;
++		break;
++	case MtFeCodeRate_26_45:
++		p->fec_inner = FEC_26_45;
++		break;
++	case MtFeCodeRate_28_45:
++		p->fec_inner = FEC_28_45;
++		break;
++	case MtFeCodeRate_29_45:
++		p->fec_inner = FEC_28_45;
++		break;
++	case MtFeCodeRate_31_45:
++		p->fec_inner = FEC_32_45;
++		break;
++	case MtFeCodeRate_32_45:
++		p->fec_inner = FEC_32_45;
++		break;
++	case MtFeCodeRate_77_90:
++		p->fec_inner = FEC_77_90;
++		break;
++	default:
++		p->fec_inner = FEC_NONE;
++		break;
++	}
++	p->pilot = p_info.is_pilot_on ? PILOT_ON : PILOT_OFF;
++	switch (p_info.roll_off) {
++	case MtFeRollOff_0p35:
++		p->rolloff = ROLLOFF_35;
++		break;
++	case MtFeRollOff_0p25:
++		p->rolloff = ROLLOFF_25;
++		break;
++	case MtFeRollOff_0p20:
++		p->rolloff = ROLLOFF_20;
++		break;
++	case MtFeRollOff_0p15:
++		p->rolloff = ROLLOFF_15;
++		break;
++	case MtFeRollOff_0p10:
++		p->rolloff = ROLLOFF_10;
++		break;
++	case MtFeRollOff_0p05:
++		p->rolloff = ROLLOFF_5;
++		break;
++	default:
++		p->rolloff = ROLLOFF_AUTO;
++		break;
++	}
++	p->inversion = (p_info.is_spectrum_inv - 1) ? INVERSION_ON :
++						      INVERSION_OFF;
++
++	return 0;
++}
++
++static const struct dvb_frontend_ops m88rs6060_ops = {
++	.delsys = { SYS_DVBS, SYS_DVBS2 },
++	.info = { .name = "Montage m88rs6060",
++		  .frequency_min_hz = 950 * MHz,
++		  .frequency_max_hz = 2150 * MHz,
++		  .symbol_rate_min = 1000000,
++		  .symbol_rate_max = 45000000,
++		  .caps = FE_CAN_INVERSION_AUTO | FE_CAN_FEC_AUTO |
++			  FE_CAN_QPSK | FE_CAN_RECOVER | FE_CAN_2G_MODULATION |
++			  FE_CAN_MULTISTREAM },
++
++	.init = m88rs6060_init,
++#ifdef HWTUNE
++	.get_frontend_algo = m88rs6060_get_algo,
++	.tune = m88rs6060_tune,
++#else
++	.set_frontend = m88rs6060_set_frontend,
++#endif
++	.get_frontend = m88rs6060_get_frontend,
++	.read_status = m88rs6060_read_status,
++	.read_ber = m88rs6060_read_ber,
++	.read_signal_strength = m88rs6060_read_signal_strength,
++	.read_snr = m88rs6060_read_snr,
++	.set_voltage = m88rs6060_set_voltage,
++	.set_tone = m88rs6060_set_tone,
++	.diseqc_send_burst = m88rs6060_diseqc_send_burst,
++	.diseqc_send_master_cmd = m88rs6060_diseqc_send_master_cmd,
++};
++
++static int m88rs6060_ready(struct m88rs6060_dev *dev)
++{
++	int ret, len, rem;
++	const struct firmware *firmware;
++	const char *name = M88RS6060_FIRMWARE;
++	unsigned val;
++
++	dev_dbg(&dev->client->dev, "%s", __func__);
++
++	//reset the harware;
++	m88rs6060_hard_rest(dev);
++
++	/* cold state - try to download firmware */
++	dev_info(&dev->client->dev, "found in cold state\n");
++
++	/* request the firmware, this will block and timeout */
++	ret = request_firmware(&firmware, name, &dev->client->dev);
++	if (ret) {
++		dev_err(&dev->client->dev, "firmware file '%s' not found\n",
++			name);
++		goto err;
++	}
++
++	dev_info(&dev->client->dev, "downloading firmware from file '%s'\n",
++		 name);
++
++	ret = regmap_write(dev->regmap, 0xb2, 0x01);
++	if (ret)
++		goto err_release_firmware;
++
++	dev_dbg(&dev->client->dev,
++		" firmware size  = %lu data %02x %02x %02x\n", firmware->size,
++		firmware->data[0], firmware->data[1], firmware->data[2]);
++
++	for (rem = firmware->size; rem > 0;
++	     rem -= (dev->config.i2c_wr_max - 1)) {
++		len = min(dev->config.i2c_wr_max - 1, rem);
++		ret = m88rs6060_fireware_download(
++			dev, 0xb0, &firmware->data[firmware->size - rem], len);
++		if (ret) {
++			dev_err(&dev->client->dev,
++				"firmware download failed  len  %d  %d\n", len,
++				ret);
++			goto err_release_firmware;
++		}
++	}
++
++	ret = regmap_write(dev->regmap, 0xb2, 0x00);
++	if (ret)
++		goto err_release_firmware;
++
++	release_firmware(firmware);
++
++	ret = regmap_read(dev->regmap, 0xb9, &val);
++	if (ret)
++		goto err;
++
++	if (!val) {
++		ret = -EINVAL;
++		dev_info(&dev->client->dev, "firmware did not run\n");
++		goto err;
++	}
++
++	dev_info(&dev->client->dev, "found in warm state\n");
++	dev_info(&dev->client->dev, "firmware version:%X\n", val);
++	msleep(5);
++	m88res6060_set_ts_mode(dev);
++
++	regmap_read(dev->regmap, 0x4d, &val);
++	regmap_write(dev->regmap, 0x4d, val & 0xfd);
++
++	return 0;
++err_release_firmware:
++	release_firmware(firmware);
++err:
++	dev_dbg(&dev->client->dev, "failed=%d\n", ret);
++	return ret;
++}
++
++static int m88rs6060_select(struct i2c_mux_core *muxc, u32 chan)
++{
++	struct m88rs6060_dev *dev = i2c_mux_priv(muxc);
++	struct i2c_adapter *i2c = muxc->parent;
++	u8 select[] = { 0x03, dev->config.repeater_value };
++	struct i2c_msg msg[] = {
++		{ .addr = dev->config.demod_adr,
++		  .flags = 0,
++		  .buf = select,
++		  .len = ARRAY_SIZE(select) },
++	};
++	int ret;
++
++	ret = __i2c_transfer(i2c, msg, ARRAY_SIZE(msg));
++	if (ret < 0) {
++		dev_err(muxc->dev, "select fail=%d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int m88rs6060_bind(struct device *dev, struct device *master, void *data)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct m88rs6060_dev *priv = i2c_get_clientdata(client);
++	struct dvb_frontend *fe = data;
++	fe->demodulator_priv = priv;
++	memcpy(&fe->ops, &m88rs6060_ops, sizeof(struct dvb_frontend_ops));
++
++	return 0;
++}
++
++static void m88rs6060_unbind(struct device *dev, struct device *master,
++			     void *data)
++{
++	struct dvb_frontend *fe = data;
++	fe->demodulator_priv = NULL;
++	memset(&fe->ops, 0, sizeof(struct dvb_frontend_ops));
++	dev_info(dev, "M88RS6060 driver unbind.\n");
++}
++
++static const struct component_ops m88rs6060_component_ops = {
++	.bind = m88rs6060_bind,
++	.unbind = m88rs6060_unbind,
++};
++
++static int m88rs6060_probe(struct i2c_client *client)
++{
++	const struct m88rs6060_cfg *cfg = i2c_get_match_data(client);
++	struct m88rs6060_dev *dev;
++	int ret;
++	unsigned tmp;
++	struct i2c_board_info tuner_info;
++	static const struct regmap_config regmap_config = {
++		.reg_bits = 8,
++		.val_bits = 8,
++	};
++
++	dev_dbg(&client->dev, "\n");
++
++	dev = devm_kzalloc(&client->dev, sizeof(*dev), GFP_KERNEL);
++	if (!dev) {
++		ret = -ENOMEM;
++		goto err;
++	}
++
++	dev->config.demod_adr = client->addr;
++	dev->config.tuner_adr = cfg->tuner_adr;
++	dev->config.clk = cfg->clk;
++	dev->config.ts_mode = cfg->ts_mode;
++	dev->config.i2c_wr_max = cfg->i2c_wr_max;
++	dev->config.ts_pinswitch = cfg->ts_pinswitch;
++	dev->config.ts_autoclock = cfg->ts_autoclock;
++	dev->config.repeater_value = cfg->repeater_value;
++	dev->config.envelope_mode = cfg->envelope_mode;
++	dev->config.disable_22k = cfg->disable_22k;
++	dev->TsClockChecked = false;
++	dev->config.num = cfg->num;
++
++	dev->client = client;
++	dev->regmap = devm_regmap_init_i2c(client, &regmap_config);
++	if (IS_ERR(dev->regmap)) {
++		ret = PTR_ERR(dev->regmap);
++		goto err;
++	}
++	/*check demod i2c */
++	ret = regmap_read(dev->regmap, 0x00, &tmp);
++	if (ret) {
++		goto err;
++	}
++	if (tmp != 0xe2) {
++		ret = -ENODEV;
++		goto err;
++	}
++
++	/* create mux i2c adapter for internal tuner */
++	dev->muxc = i2c_mux_alloc(client->adapter, &dev->client->dev, 1, 0,
++				  I2C_MUX_GATE, m88rs6060_select, NULL);
++	if (!dev->muxc) {
++		ret = -ENOMEM;
++		goto err;
++	}
++	dev->muxc->priv = dev;
++	ret = i2c_mux_add_adapter(dev->muxc, 0, 0);
++	if (ret)
++		goto err;
++
++	memset(&tuner_info, 0, sizeof(tuner_info));
++	tuner_info.addr = cfg->tuner_adr;
++	dev->tuner_client =
++		i2c_new_client_device(dev->muxc->adapter[0], &tuner_info);
++	if (IS_ERR(dev->tuner_client)) {
++		dev_err(&client->dev, "Failed to create i2c tuner client\n");
++		ret = PTR_ERR(client);
++		goto err_i2c_adapter;
++	}
++
++	dev->tuner_regmap =
++		devm_regmap_init_i2c(dev->tuner_client, &regmap_config);
++	if (IS_ERR(dev->tuner_regmap)) {
++		ret = PTR_ERR(dev->tuner_regmap);
++		goto err_i2c_adapter;
++	}
++
++	dev->mclk = 96000;
++	dev->fe_status = 0;
++
++	i2c_set_clientdata(client, dev);
++
++	/* set cold state */
++	dev->warm = false;
++
++	dev_dbg(&dev->client->dev, "found the chip of %s.",
++		m88rs6060_ops.info.name);
++	//ready chip
++	m88rs6060_ready(dev);
++
++	ret = component_add(&dev->client->dev, &m88rs6060_component_ops);
++	if (ret) {
++		dev_err(&dev->client->dev, "%s:Failed to add as component\n",
++			KBUILD_MODNAME);
++		goto err_tuner_client;
++	}
++
++	return 0;
++
++err_tuner_client:
++	i2c_unregister_device(dev->tuner_client);
++
++err_i2c_adapter:
++	i2c_mux_del_adapters(dev->muxc);
++
++err:
++	dev_warn(&dev->client->dev, "probe failed = %d\n", ret);
++	return ret;
++}
++
++static void m88rs6060_remove(struct i2c_client *client)
++{
++	struct m88rs6060_dev *dev = i2c_get_clientdata(client);
++	component_del(&dev->client->dev, &m88rs6060_component_ops);
++
++	dev_dbg(&dev->client->dev, "\n");
++
++	i2c_unregister_device(dev->tuner_client);
++	i2c_mux_del_adapters(dev->muxc);
++}
++
++struct m88rs6060_cfg m88rs6060_configs[] = {
++	{
++		.clk = 27000000,
++		.i2c_wr_max = 33,
++		.ts_mode = MtFeTsOutMode_Parallel,
++		.demod_adr = 0x69,
++		.tuner_adr = 0x2c,
++		.repeater_value = 0x11,
++	},
++	{
++		.clk = 27000000,
++		.i2c_wr_max = 33,
++		.ts_mode = MtFeTsOutMode_Serial,
++		.demod_adr = 0x69,
++		.tuner_adr = 0x2c,
++		.repeater_value = 0x11,
++	},
++};
++
++static const struct of_device_id m88rs6060_of_match[] = {
++	{ "montage,m88rs6060", .data = &m88rs6060_configs[0] },
++	{ "montage,m88rs6060-27p", .data = &m88rs6060_configs[0] },
++	{ "montage,m88rs6060-27s", .data = &m88rs6060_configs[1] },
++	{}
++};
++MODULE_DEVICE_TABLE(of, m88rs6060_of_match);
++
++static const struct i2c_device_id m88rs6060_id_table[] = {
++	{ "m88rs6060", (kernel_ulong_t)&m88rs6060_configs[0] },
++	{ "m88rs6060-27p", (kernel_ulong_t)&m88rs6060_configs[0] },
++	{ "m88rs6060-27s", (kernel_ulong_t)&m88rs6060_configs[1] },
++	{}
++};
++
++MODULE_DEVICE_TABLE(i2c, m88rs6060_id_table);
++
++static struct i2c_driver m88rs6060_driver = {
++	.driver = {
++		.name = "m88rs6060",
++        .of_match_table = m88rs6060_of_match,
++	},
++	.probe = m88rs6060_probe,
++	.remove = m88rs6060_remove,
++	.id_table = m88rs6060_id_table,
++};
++
++module_i2c_driver(m88rs6060_driver);
++
++MODULE_AUTHOR("Davin zhang <Davin@tbsdtv.com>");
++MODULE_DESCRIPTION("Montage M88RS6060 driver");
++MODULE_LICENSE("GPL");
++MODULE_FIRMWARE(M88RS6060_FIRMWARE);
+diff --git a/drivers/media/dvb-frontends/m88rs6060.h b/drivers/media/dvb-frontends/m88rs6060.h
+new file mode 100644
+index 000000000000..fa5a482fd8bf
+--- /dev/null
++++ b/drivers/media/dvb-frontends/m88rs6060.h
+@@ -0,0 +1,161 @@
++//SPX-License-Identifier: GPL-2.0-or-later
++/*
++ * Montage Technology M88rs6060 demodulator and tuner drivers
++ * some code form 
++ * Copyright (c) 2021 Davin zhang <Davin@tbsdtv.com> www.Turbosight.com
++ *
++*/
++
++#ifndef _M88RS6060_H_
++#define _M88RS6060_H_
++#include <linux/dvb/frontend.h>
++
++#define MT_FE_MCLK_KHZ 96000
++
++/*
++* 
++*/
++
++enum m88rs6060_ts_mode {
++	MtFeTsOutMode_Unknown = 0,
++	MtFeTsOutMode_Serial,
++	MtFeTsOutMode_Parallel,
++	MtFeTsOutMode_Common,
++};
++
++enum MT_FE_CODE_RATE {
++	MtFeCodeRate_Undef = 0,
++	MtFeCodeRate_1_4,
++	MtFeCodeRate_1_3,
++	MtFeCodeRate_2_5,
++	MtFeCodeRate_1_2,
++	MtFeCodeRate_3_5,
++	MtFeCodeRate_2_3,
++	MtFeCodeRate_3_4,
++	MtFeCodeRate_4_5,
++	MtFeCodeRate_5_6,
++	MtFeCodeRate_7_8,
++	MtFeCodeRate_8_9,
++	MtFeCodeRate_9_10
++	//,MtFeCodeRate_1_2L
++	//,MtFeCodeRate_3_5L
++	//,MtFeCodeRate_2_3L
++	,
++	MtFeCodeRate_5_9
++	//,MtFeCodeRate_5_9L
++	,
++	MtFeCodeRate_7_9,
++	MtFeCodeRate_4_15,
++	MtFeCodeRate_7_15,
++	MtFeCodeRate_8_15
++	//,MtFeCodeRate_8_15L
++	,
++	MtFeCodeRate_11_15
++	//,MtFeCodeRate_11_15L
++	,
++	MtFeCodeRate_13_18,
++	MtFeCodeRate_9_20,
++	MtFeCodeRate_11_20,
++	MtFeCodeRate_23_36,
++	MtFeCodeRate_25_36,
++	MtFeCodeRate_11_45,
++	MtFeCodeRate_13_45,
++	MtFeCodeRate_14_45,
++	MtFeCodeRate_26_45
++	//,MtFeCodeRate_26_45L
++	,
++	MtFeCodeRate_28_45,
++	MtFeCodeRate_29_45
++	//,MtFeCodeRate_29_45L
++	,
++	MtFeCodeRate_31_45
++	//,MtFeCodeRate_31_45L
++	,
++	MtFeCodeRate_32_45
++	//,MtFeCodeRate_32_45L
++	,
++	MtFeCodeRate_77_90
++};
++
++enum MT_FE_ROLL_OFF {
++	MtFeRollOff_Undef = 0,
++	MtFeRollOff_0p35,
++	MtFeRollOff_0p25,
++	MtFeRollOff_0p20,
++	MtFeRollOff_0p15,
++	MtFeRollOff_0p10,
++	MtFeRollOff_0p05
++} MT_FE_ROLL_OFF;
++
++enum MT_FE_SPECTRUM_MODE {
++	MtFeSpectrum_Undef = 0,
++	MtFeSpectrum_Normal,
++	MtFeSpectrum_Inversion
++};
++
++enum MT_FE_TYPE {
++	MtFeType_Undef = 0,
++	MtFeType_DVBC = 0x10,
++	MtFeType_DVBT = 0x20,
++	MtFeType_DVBT2 = 0x21,
++	MtFeType_DTMB = 0x30,
++	MtFeType_DvbS = 0x40,
++	MtFeType_DvbS2 = 0x41,
++	MtFeType_DvbS2X = 0x42,
++	MtFeType_ABS = 0x50,
++	MtFeType_TMS = 0x51,
++	MtFeType_DTV_Unknown = 0xFE,
++	MtFeType_DTV_Checked = 0xFF
++};
++
++enum MT_FE_MOD_MODE {
++	MtFeModMode_Undef = 0,
++	MtFeModMode_4Qam,
++	MtFeModMode_4QamNr,
++	MtFeModMode_16Qam,
++	MtFeModMode_32Qam,
++	MtFeModMode_64Qam,
++	MtFeModMode_128Qam,
++	MtFeModMode_256Qam,
++	MtFeModMode_Qpsk,
++	MtFeModMode_8psk,
++	MtFeModMode_16Apsk,
++	MtFeModMode_32Apsk,
++	MtFeModMode_64Apsk,
++	MtFeModMode_128Apsk,
++	MtFeModMode_256Apsk,
++	MtFeModMode_8Apsk_L,
++	MtFeModMode_16Apsk_L,
++	MtFeModMode_32Apsk_L,
++	MtFeModMode_64Apsk_L,
++	MtFeModMode_128Apsk_L,
++	MtFeModMode_256Apsk_L,
++	MtFeModMode_Auto
++};
++enum MT_FE_LOCK_STATE {
++	MtFeLockState_Undef = 0,
++	MtFeLockState_Unlocked,
++	MtFeLockState_Locked,
++	MtFeLockState_Waiting
++};
++
++struct m88rs6060_cfg {
++	u8 demod_adr;
++	u8 tuner_adr;
++	enum m88rs6060_ts_mode ts_mode; // 1:serial 2: parallel 3:common
++	/* select ts output pin order
++	 * for serial ts mode, swap pin D0 &D7
++	 * for parallel or CI mode ,swap the order of D0 ~D7
++	 */
++	bool ts_pinswitch;
++	bool ts_autoclock;
++	u32 clk;
++	u16 i2c_wr_max;
++	u8 envelope_mode; //for diseqc   default 0
++	//0x11 or 0x12 0x11 : there is only one i2c_STOP flag. 0x12 ther are two I2C_STOP flag.
++	u8 repeater_value;
++	bool disable_22k; //for 6909se tuner 1,3,5,7
++	u8 num; // for ci setting;
++};
++
++#endif
+diff --git a/drivers/media/dvb-frontends/m88rs6060_priv.h b/drivers/media/dvb-frontends/m88rs6060_priv.h
+new file mode 100644
+index 000000000000..e30a3fcac9bd
+--- /dev/null
++++ b/drivers/media/dvb-frontends/m88rs6060_priv.h
+@@ -0,0 +1,297 @@
++#ifndef _M88RS6060_PRIV_H_
++#define _M88RS6060_PRIV_H_
++#include <media/dvb_frontend.h>
++
++#include <linux/regmap.h>
++#include <linux/firmware.h>
++#include <linux/math64.h>
++
++#include "m88rs6060.h"
++
++#ifndef TRUE
++#define TRUE 1
++#endif
++
++#ifndef FALSE
++#define FALSE 0
++#endif
++#define M88RS6060_FIRMWARE "dvb-demod-m88rs6060.fw"
++
++//Improve the driver capability or not
++// 0:4mA, 1:8mA,2 :12mA , 3:16mA
++#define MT_FE_ENHANCE_TS_PIN_LEVEL_PARALLEL_CI 0
++/*set frequency offset to tuner when symbol rate <5000KSs*/
++#define FREQ_OFFSET_AT_SMALL_SYM_RATE_KHz 3000
++
++struct m88rs6060_reg_val {
++	u8 reg;
++	u8 val;
++};
++static const struct m88rs6060_reg_val rs6060_reg_tbl_def[] = {
++	{ 0x04, 0x00 },
++
++	{ 0x8a, 0x01 }, //modify by Henry 20171211
++	{ 0x16, 0xa7 },
++
++	{ 0x30, 0x88 },
++	{ 0x4a, 0x80 }, //0x81 for fpga, and 0x80 for asic
++	{ 0x4d, 0x91 },
++	{ 0xae, 0x09 },
++	{ 0x22, 0x01 },
++	{ 0x23, 0x00 },
++	{ 0x24, 0x00 },
++	{ 0x27, 0x07 },
++	{ 0x9c, 0x31 },
++	{ 0x9d, 0xc1 },
++	{ 0xcb, 0xf4 },
++	{ 0xca, 0x00 },
++	{ 0x7f, 0x04 },
++	{ 0x78, 0x0c },
++	{ 0x85, 0x08 },
++	//for s2 mode ts out en
++	{ 0x08, 0x47 },
++	{ 0xf0, 0x03 },
++
++	{ 0xfa, 0x01 },
++	{ 0xf2, 0x00 },
++	{ 0xfa, 0x00 },
++	{ 0xe6, 0x00 },
++	{ 0xe7, 0xf3 },
++
++	//for s mode vtb code rate all en
++	{ 0x08, 0x43 },
++	{ 0xe0, 0xf8 },
++	{ 0x00, 0x00 },
++	{ 0xbd, 0x83 },
++	{ 0xbe, 0xa1 }
++};
++
++struct MT_FE_PLS_INFO {
++	u8 iPLSCode;
++	bool bValid;
++	enum MT_FE_TYPE mDvbType;
++	enum MT_FE_MOD_MODE mModMode;
++	enum MT_FE_CODE_RATE mCodeRate;
++	bool bPilotOn;
++	bool bDummyFrame;
++	s8 iFrameLength; /*0: Normal; 1: Short; 2: Medium */
++};
++
++struct MT_FE_CHAN_INFO_DVBS2 {
++	u8 iPlsCode;
++	enum MT_FE_TYPE type;
++	enum MT_FE_MOD_MODE mod_mode;
++	enum MT_FE_ROLL_OFF roll_off;
++	enum MT_FE_CODE_RATE code_rate;
++	bool is_pilot_on;
++	enum MT_FE_SPECTRUM_MODE is_spectrum_inv;
++	bool is_dummy_frame;
++	s8 iVcmCycle;
++	s8 iFrameLength; /*0: Normal; 1: Short; 2: Medium */
++};
++
++//for si5351
++/* Define definitions */
++
++#define SI5351_BUS_BASE_ADDR 0x60
++#define SI5351_XTAL_FREQ 27000000
++#define SI5351_PLL_FIXED 900000000
++
++#define SI5351_PLL_VCO_MIN 600000000
++#define SI5351_PLL_VCO_MAX 900000000
++#define SI5351_MULTISYNTH_MIN_FREQ 1000000
++#define SI5351_MULTISYNTH_DIVBY4_FREQ 150000000
++#define SI5351_MULTISYNTH_MAX_FREQ 160000000
++#define SI5351_MULTISYNTH67_MAX_FREQ SI5351_MULTISYNTH_DIVBY4_FREQ
++#define SI5351_CLKOUT_MIN_FREQ 8000
++#define SI5351_CLKOUT_MAX_FREQ SI5351_MULTISYNTH_MAX_FREQ
++#define SI5351_CLKOUT67_MAX_FREQ SI5351_MULTISYNTH67_MAX_FREQ
++
++#define SI5351_PLL_A_MIN 15
++#define SI5351_PLL_A_MAX 90
++#define SI5351_PLL_B_MAX (SI5351_PLL_C_MAX - 1)
++#define SI5351_PLL_C_MAX 1048575
++#define SI5351_MULTISYNTH_A_MIN 6
++#define SI5351_MULTISYNTH_A_MAX 1800
++#define SI5351_MULTISYNTH67_A_MAX 254
++#define SI5351_MULTISYNTH_B_MAX (SI5351_MULTISYNTH_C_MAX - 1)
++#define SI5351_MULTISYNTH_C_MAX 1048575
++#define SI5351_MULTISYNTH_P1_MAX ((1 << 18) - 1)
++#define SI5351_MULTISYNTH_P2_MAX ((1 << 20) - 1)
++#define SI5351_MULTISYNTH_P3_MAX ((1 << 20) - 1)
++
++#define SI5351_DEVICE_STATUS 0
++#define SI5351_INTERRUPT_STATUS 1
++#define SI5351_INTERRUPT_MASK 2
++#define SI5351_STATUS_SYS_INIT (1 << 7)
++#define SI5351_STATUS_LOL_B (1 << 6)
++#define SI5351_STATUS_LOL_A (1 << 5)
++#define SI5351_STATUS_LOS (1 << 4)
++#define SI5351_OUTPUT_ENABLE_CTRL 3
++#define SI5351_OEB_PIN_ENABLE_CTRL 9
++#define SI5351_PLL_INPUT_SOURCE 15
++#define SI5351_CLKIN_DIV_MASK (3 << 6)
++#define SI5351_CLKIN_DIV_1 (0 << 6)
++#define SI5351_CLKIN_DIV_2 (1 << 6)
++#define SI5351_CLKIN_DIV_4 (2 << 6)
++#define SI5351_CLKIN_DIV_8 (3 << 6)
++#define SI5351_PLLB_SOURCE (1 << 3)
++#define SI5351_PLLA_SOURCE (1 << 2)
++
++#define SI5351_CLK0_CTRL 16
++#define SI5351_CLK1_CTRL 17
++#define SI5351_CLK2_CTRL 18
++#define SI5351_CLK3_CTRL 19
++#define SI5351_CLK4_CTRL 20
++#define SI5351_CLK5_CTRL 21
++#define SI5351_CLK6_CTRL 22
++#define SI5351_CLK7_CTRL 23
++#define SI5351_CLK_POWERDOWN (1 << 7)
++#define SI5351_CLK_INTEGER_MODE (1 << 6)
++#define SI5351_CLK_PLL_SELECT (1 << 5)
++#define SI5351_CLK_INVERT (1 << 4)
++#define SI5351_CLK_INPUT_MASK (3 << 2)
++#define SI5351_CLK_INPUT_XTAL (0 << 2)
++#define SI5351_CLK_INPUT_CLKIN (1 << 2)
++#define SI5351_CLK_INPUT_MULTISYNTH_0_4 (2 << 2)
++#define SI5351_CLK_INPUT_MULTISYNTH_N (3 << 2)
++#define SI5351_CLK_DRIVE_STRENGTH_MASK (3 << 0)
++#define SI5351_CLK_DRIVE_STRENGTH_2MA (0 << 0)
++#define SI5351_CLK_DRIVE_STRENGTH_4MA (1 << 0)
++#define SI5351_CLK_DRIVE_STRENGTH_6MA (2 << 0)
++#define SI5351_CLK_DRIVE_STRENGTH_8MA (3 << 0)
++
++#define SI5351_CLK3_0_DISABLE_STATE 24
++#define SI5351_CLK7_4_DISABLE_STATE 25
++#define SI5351_CLK_DISABLE_STATE_MASK 3
++#define SI5351_CLK_DISABLE_STATE_LOW 0
++#define SI5351_CLK_DISABLE_STATE_HIGH 1
++#define SI5351_CLK_DISABLE_STATE_FLOAT 2
++#define SI5351_CLK_DISABLE_STATE_NEVER 3
++
++#define SI5351_PARAMETERS_LENGTH 8
++#define SI5351_PLLA_PARAMETERS 26
++#define SI5351_PLLB_PARAMETERS 34
++#define SI5351_CLK0_PARAMETERS 42
++#define SI5351_CLK1_PARAMETERS 50
++#define SI5351_CLK2_PARAMETERS 58
++#define SI5351_CLK3_PARAMETERS 66
++#define SI5351_CLK4_PARAMETERS 74
++#define SI5351_CLK5_PARAMETERS 82
++#define SI5351_CLK6_PARAMETERS 90
++#define SI5351_CLK7_PARAMETERS 91
++#define SI5351_CLK6_7_OUTPUT_DIVIDER 92
++#define SI5351_OUTPUT_CLK_DIV_MASK (7 << 4)
++#define SI5351_OUTPUT_CLK6_DIV_MASK (7 << 0)
++#define SI5351_OUTPUT_CLK_DIV_SHIFT 4
++#define SI5351_OUTPUT_CLK_DIV6_SHIFT 0
++#define SI5351_OUTPUT_CLK_DIV_1 0
++#define SI5351_OUTPUT_CLK_DIV_2 1
++#define SI5351_OUTPUT_CLK_DIV_4 2
++#define SI5351_OUTPUT_CLK_DIV_8 3
++#define SI5351_OUTPUT_CLK_DIV_16 4
++#define SI5351_OUTPUT_CLK_DIV_32 5
++#define SI5351_OUTPUT_CLK_DIV_64 6
++#define SI5351_OUTPUT_CLK_DIV_128 7
++#define SI5351_OUTPUT_CLK_DIVBY4 (3 << 2)
++
++#define SI5351_SSC_PARAM0 149
++#define SI5351_SSC_PARAM1 150
++#define SI5351_SSC_PARAM2 151
++#define SI5351_SSC_PARAM3 152
++#define SI5351_SSC_PARAM4 153
++#define SI5351_SSC_PARAM5 154
++#define SI5351_SSC_PARAM6 155
++#define SI5351_SSC_PARAM7 156
++#define SI5351_SSC_PARAM8 157
++#define SI5351_SSC_PARAM9 158
++#define SI5351_SSC_PARAM10 159
++#define SI5351_SSC_PARAM11 160
++#define SI5351_SSC_PARAM12 161
++
++#define SI5351_VXCO_PARAMETERS_LOW 162
++#define SI5351_VXCO_PARAMETERS_MID 163
++#define SI5351_VXCO_PARAMETERS_HIGH 164
++
++#define SI5351_CLK0_PHASE_OFFSET 165
++#define SI5351_CLK1_PHASE_OFFSET 166
++#define SI5351_CLK2_PHASE_OFFSET 167
++#define SI5351_CLK3_PHASE_OFFSET 168
++#define SI5351_CLK4_PHASE_OFFSET 169
++#define SI5351_CLK5_PHASE_OFFSET 170
++
++#define SI5351_PLL_RESET 177
++#define SI5351_PLL_RESET_B (1 << 7)
++#define SI5351_PLL_RESET_A (1 << 5)
++
++#define SI5351_CRYSTAL_LOAD 183
++#define SI5351_CRYSTAL_LOAD_MASK (3 << 6)
++#define SI5351_CRYSTAL_LOAD_6PF (1 << 6)
++#define SI5351_CRYSTAL_LOAD_8PF (2 << 6)
++#define SI5351_CRYSTAL_LOAD_10PF (3 << 6)
++
++#define SI5351_FANOUT_ENABLE 187
++#define SI5351_CLKIN_ENABLE (1 << 7)
++#define SI5351_XTAL_ENABLE (1 << 6)
++#define SI5351_MULTISYNTH_ENABLE (1 << 4)
++
++/* Enum definitions */
++
++/*
++ * enum si5351_variant - SiLabs Si5351 chip variant
++ * @SI5351_VARIANT_A: Si5351A (8 output clocks, XTAL input)
++ * @SI5351_VARIANT_A3: Si5351A MSOP10 (3 output clocks, XTAL input)
++ * @SI5351_VARIANT_B: Si5351B (8 output clocks, XTAL/VXCO input)
++ * @SI5351_VARIANT_C: Si5351C (8 output clocks, XTAL/CLKIN input)
++ */
++enum si5351_variant {
++	SI5351_VARIANT_A = 1,
++	SI5351_VARIANT_A3 = 2,
++	SI5351_VARIANT_B = 3,
++	SI5351_VARIANT_C = 4,
++};
++
++enum si5351_clock {
++	SI5351_CLK0,
++	SI5351_CLK1,
++	SI5351_CLK2,
++	SI5351_CLK3,
++	SI5351_CLK4,
++	SI5351_CLK5,
++	SI5351_CLK6,
++	SI5351_CLK7
++};
++
++enum si5351_pll { SI5351_PLLA, SI5351_PLLB };
++
++enum si5351_drive {
++	SI5351_DRIVE_2MA,
++	SI5351_DRIVE_4MA,
++	SI5351_DRIVE_6MA,
++	SI5351_DRIVE_8MA
++};
++
++/* Struct definitions */
++
++struct Si5351RegSet {
++	u32 p1;
++	u32 p2;
++	u32 p3;
++};
++
++struct Si5351Status {
++	u8 SYS_INIT;
++	u8 LOL_B;
++	u8 LOL_A;
++	u8 LOS;
++	u8 REVID;
++};
++
++struct Si5351IntStatus {
++	u8 SYS_INIT_STKY;
++	u8 LOL_B_STKY;
++	u8 LOL_A_STKY;
++	u8 LOS_STKY;
++};
++//
++#endif
+diff --git a/drivers/media/tuners/Kconfig b/drivers/media/tuners/Kconfig
+index acc4fea945c1..a96daff6fd78 100644
+--- a/drivers/media/tuners/Kconfig
++++ b/drivers/media/tuners/Kconfig
+@@ -76,6 +76,13 @@ config MEDIA_TUNER_M88RS6000T
+ 	help
+ 	  Montage M88RS6000 internal tuner.
+ 
++config MEDIA_TUNER_M88TC6800
++	tristate "Montage M88TC6800 tuner"
++	depends on MEDIA_SUPPORT && I2C
++	default m if !MEDIA_SUBDRV_AUTOSELECT
++	help
++	  Montage M88TC6800 internal tuner.
++
+ config MEDIA_TUNER_MAX2165
+ 	tristate "Maxim MAX2165 silicon tuner"
+ 	depends on MEDIA_SUPPORT && I2C
+diff --git a/drivers/media/tuners/Makefile b/drivers/media/tuners/Makefile
+index 037b3e739263..926712afe98c 100644
+--- a/drivers/media/tuners/Makefile
++++ b/drivers/media/tuners/Makefile
+@@ -15,6 +15,7 @@ obj-$(CONFIG_MEDIA_TUNER_FC0013) += fc0013.o
+ obj-$(CONFIG_MEDIA_TUNER_FC2580) += fc2580.o
+ obj-$(CONFIG_MEDIA_TUNER_IT913X) += it913x.o
+ obj-$(CONFIG_MEDIA_TUNER_M88RS6000T) += m88rs6000t.o
++obj-$(CONFIG_MEDIA_TUNER_M88TC6800) += m88tc6800.o
+ obj-$(CONFIG_MEDIA_TUNER_MAX2165) += max2165.o
+ obj-$(CONFIG_MEDIA_TUNER_MC44S803) += mc44s803.o
+ obj-$(CONFIG_MEDIA_TUNER_MSI001) += msi001.o
+diff --git a/drivers/media/tuners/m88tc6800.c b/drivers/media/tuners/m88tc6800.c
+new file mode 100644
+index 000000000000..a3c13aae6c3d
+--- /dev/null
++++ b/drivers/media/tuners/m88tc6800.c
+@@ -0,0 +1,1754 @@
++#include "m88tc6800.h"
++#include <linux/component.h>
++
++typedef unsigned char    byte;
++typedef unsigned long long    ulonglong;
++typedef unsigned short    undefined2;
++
++static const u8 m88tc6800_fw[] = {
++0x0a, 0x12, 0x8a, 0x11, 0x12, 0x28, 0x00, 0x00, 0xfe, 0x00, 0x03, 0x0e, 0x83, 0x12, 0x03, 0x13, 0xd4, 0x00, 0x04, 0x08, 0xd5, 0x00, 0x0a, 0x08, 0xd6, 0x00, 0x7f, 0x08, 0xd7, 0x00, 0x0a, 0x12, 0x8a, 0x11, 0x29, 0x28, 0x0a, 0x12, 0x8a, 0x11, 0x15, 0x28, 0x20, 0x30, 0xde, 0x01, 0x83, 0x13, 0x84, 0x00, 0x52, 0x30, 0x0a, 0x12, 0x8a, 0x11, 0xac, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0xa0, 0x30,
++0x84, 0x00, 0xb4, 0x30, 0x0a, 0x12, 0x8a, 0x11, 0xac, 0x27, 0x83, 0x01, 0x0a, 0x12, 0x8a, 0x11, 0x01, 0x2e, 0x11, 0x08, 0xd8, 0x00, 0x01, 0x30, 0x0c, 0x1c, 0x00, 0x39, 0x0d, 0x1c, 0x00, 0x39, 0x00, 0x38, 0x03, 0x19, 0x45, 0x28, 0x09, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x0a, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x0a, 0x12,
++0x8a, 0x11, 0xd9, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0x0c, 0x10, 0x01, 0x30, 0x8c, 0x1c, 0x00, 0x39, 0x8d, 0x1c, 0x00, 0x39, 0x00, 0x38, 0x03, 0x19, 0x5b, 0x28, 0x34, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x35, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x68, 0x20, 0x8c, 0x10, 0x58, 0x08, 0x91, 0x00, 0x57, 0x08, 0xff, 0x00, 0x56, 0x08,
++0x8a, 0x00, 0x55, 0x08, 0x84, 0x00, 0x54, 0x0e, 0x83, 0x00, 0xfe, 0x0e, 0x7e, 0x0e, 0x09, 0x00, 0x66, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd2, 0x00, 0x67, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd3, 0x00, 0x3f, 0x30, 0x52, 0x05, 0xf4, 0x00, 0x53, 0x08, 0x7f, 0x39, 0xf5, 0x00, 0x06, 0x30, 0xf6, 0x01, 0xff, 0x00, 0x03, 0x10,
++0xf5, 0x0d, 0xf6, 0x0d, 0xff, 0x0b, 0x7f, 0x28, 0x74, 0x08, 0x75, 0x07, 0x83, 0x16, 0xb0, 0x00, 0x00, 0x30, 0x03, 0x18, 0x01, 0x30, 0x76, 0x07, 0xb1, 0x00, 0xb2, 0x01, 0xb1, 0x1b, 0xb2, 0x03, 0x32, 0x08, 0xb3, 0x00, 0x6a, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x2a, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0x0d, 0x30, 0xf5, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xff, 0x0b,
++0x9c, 0x28, 0x1f, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0x83, 0x16, 0xb0, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb1, 0x07, 0x78, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb2, 0x07, 0x79, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb3, 0x07, 0x6b, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x2a, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0x13, 0x30,
++0xf5, 0x01, 0xf6, 0x01, 0xf7, 0x01, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xf6, 0x0d, 0xf7, 0x0d, 0xff, 0x3e, 0x03, 0x1d, 0xc3, 0x28, 0x74, 0x08, 0x83, 0x16, 0xb0, 0x07, 0x75, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb1, 0x07, 0x76, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb2, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xb3, 0x07,
++0x6e, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xa8, 0x00, 0x6c, 0x30, 0xa9, 0x01, 0xaa, 0x01, 0xab, 0x01, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd3, 0x00, 0x7f, 0x30, 0x28, 0x05, 0xf4, 0x00, 0xf5, 0x01, 0xf6, 0x01, 0xf7, 0x01, 0x53, 0x08, 0x3f, 0x39, 0xf8, 0x00, 0x07, 0x30, 0xf9, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf8, 0x0d,
++0xf9, 0x0d, 0xff, 0x0b, 0xfe, 0x28, 0x78, 0x08, 0xfa, 0x00, 0x79, 0x08, 0xfb, 0x00, 0x00, 0x30, 0xfb, 0x1b, 0xff, 0x30, 0xfc, 0x00, 0xfd, 0x00, 0x7a, 0x08, 0xf4, 0x07, 0x7b, 0x08, 0x03, 0x18, 0x7b, 0x0f, 0xf5, 0x07, 0x7c, 0x08, 0x03, 0x18, 0x7c, 0x0f, 0xf6, 0x07, 0x7d, 0x08, 0x03, 0x18, 0x7d, 0x0a, 0xf7, 0x07, 0x77, 0x08, 0xab, 0x00, 0x76, 0x08, 0xaa, 0x00, 0x75, 0x08, 0xa9, 0x00,
++0x74, 0x08, 0xa8, 0x00, 0x6d, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd3, 0x00, 0x7f, 0x39, 0xf4, 0x00, 0x0d, 0x30, 0xf5, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xff, 0x0b, 0x2e, 0x29, 0x1f, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0xa8, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xa9, 0x07, 0x78, 0x08, 0x03, 0x11, 0x03, 0x18,
++0x01, 0x3e, 0x03, 0x1d, 0xaa, 0x07, 0x79, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xab, 0x07, 0x68, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xb7, 0x00, 0x69, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xb8, 0x00, 0x71, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd1, 0x00, 0x72, 0x30, 0x91, 0x00,
++0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd0, 0x00, 0xed, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xb4, 0x00, 0x03, 0x3a, 0x03, 0x19, 0x75, 0x29, 0x04, 0x30, 0x34, 0x06, 0x03, 0x19, 0x75, 0x29, 0x34, 0x0b, 0xcb, 0x2a, 0x5e, 0x1c, 0x90, 0x29, 0x83, 0x16, 0x33, 0x08, 0x2f, 0x02, 0x03, 0x1d, 0x86, 0x29, 0x32, 0x08, 0x2e, 0x02, 0x03, 0x1d, 0x86, 0x29,
++0x31, 0x08, 0x2d, 0x02, 0x03, 0x1d, 0x86, 0x29, 0x30, 0x08, 0x2c, 0x02, 0x03, 0x18, 0x90, 0x29, 0xac, 0x0a, 0x03, 0x19, 0xad, 0x0a, 0x03, 0x19, 0xae, 0x0a, 0x03, 0x19, 0xaf, 0x0a, 0x80, 0x2a, 0x83, 0x16, 0xdf, 0x30, 0xac, 0x01, 0xad, 0x01, 0xae, 0x01, 0xaf, 0x01, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd2, 0x00, 0xe0, 0x30, 0x91, 0x00, 0x00, 0x00,
++0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd3, 0x00, 0x05, 0x30, 0xf0, 0x00, 0x53, 0x08, 0xf7, 0x22, 0x0a, 0x12, 0x8a, 0x11, 0xf4, 0x00, 0x52, 0x08, 0x52, 0x07, 0x52, 0x07, 0x74, 0x07, 0xcb, 0x00, 0x51, 0x08, 0x4b, 0x02, 0x03, 0x18, 0xbd, 0x29, 0x83, 0x16, 0xa8, 0x0a, 0x03, 0x19, 0xa9, 0x0a, 0x03, 0x19, 0xaa, 0x0a, 0x03, 0x19, 0xab, 0x0a, 0xd3, 0x29, 0x4b, 0x08, 0x50, 0x02, 0x03, 0x18,
++0xce, 0x29, 0x83, 0x16, 0xa4, 0x0a, 0x03, 0x19, 0xa5, 0x0a, 0x03, 0x19, 0xa6, 0x0a, 0x03, 0x19, 0xa7, 0x0a, 0xa8, 0x01, 0xa9, 0x01, 0xaa, 0x01, 0xab, 0x01, 0xd7, 0x29, 0x83, 0x16, 0xa8, 0x01, 0xa9, 0x01, 0xaa, 0x01, 0xab, 0x01, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x83, 0x12, 0x2b, 0x08, 0x83, 0x16, 0x2b, 0x02, 0x03, 0x1d, 0xed, 0x29, 0x83, 0x12, 0x2a, 0x08, 0x83, 0x16,
++0x2a, 0x02, 0x03, 0x1d, 0xed, 0x29, 0x83, 0x12, 0x29, 0x08, 0x83, 0x16, 0x29, 0x02, 0x03, 0x1d, 0xed, 0x29, 0x83, 0x12, 0x28, 0x08, 0x83, 0x16, 0x28, 0x02, 0x03, 0x1c, 0x00, 0x2a, 0xa8, 0x01, 0xa9, 0x01, 0xaa, 0x01, 0xab, 0x01, 0x83, 0x12, 0x37, 0x08, 0x36, 0x02, 0x03, 0x18, 0xfb, 0x29, 0xb6, 0x0a, 0x5e, 0x14, 0x80, 0x2a, 0x37, 0x08, 0xb6, 0x00, 0x83, 0x12, 0x5e, 0x10, 0x80, 0x2a,
++0x83, 0x12, 0x2b, 0x08, 0x83, 0x16, 0x27, 0x02, 0x03, 0x1d, 0x16, 0x2a, 0x83, 0x12, 0x2a, 0x08, 0x83, 0x16, 0x26, 0x02, 0x03, 0x1d, 0x16, 0x2a, 0x83, 0x12, 0x29, 0x08, 0x83, 0x16, 0x25, 0x02, 0x03, 0x1d, 0x16, 0x2a, 0x83, 0x12, 0x28, 0x08, 0x83, 0x16, 0x24, 0x02, 0x03, 0x1c, 0xfd, 0x29, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x83, 0x12, 0x36, 0x08, 0x38, 0x02, 0x03, 0x18,
++0x23, 0x2a, 0xb6, 0x03, 0xf9, 0x29, 0x38, 0x08, 0xfc, 0x29, 0x03, 0x30, 0xbc, 0x00, 0xbe, 0x01, 0xbd, 0x01, 0xe1, 0x2a, 0x03, 0x30, 0xbc, 0x00, 0xbe, 0x01, 0xbe, 0x0a, 0x28, 0x2a, 0x03, 0x30, 0xbc, 0x00, 0xbe, 0x01, 0xbe, 0x0a, 0xbd, 0x01, 0xbd, 0x0a, 0xe1, 0x2a, 0x03, 0x30, 0xbc, 0x00, 0x02, 0x30, 0x42, 0x2a, 0x03, 0x30, 0xbc, 0x00, 0x02, 0x30, 0x67, 0x2a, 0x02, 0x30, 0x30, 0x2a,
++0x02, 0x30, 0xbc, 0x00, 0xbe, 0x00, 0x33, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x67, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x03, 0x30, 0xbe, 0x00, 0x02, 0x30, 0x7c, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x03, 0x30, 0x67, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x5c, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x6a, 0x2a, 0x02, 0x30, 0xbc, 0x00, 0x63, 0x2a, 0xbc, 0x01, 0xbc, 0x0a, 0x04, 0x30, 0x67, 0x2a, 0xbc, 0x01, 0xbc, 0x0a,
++0x6a, 0x2a, 0xbc, 0x01, 0xbc, 0x0a, 0x05, 0x30, 0x67, 0x2a, 0x04, 0x30, 0xbc, 0x01, 0xbe, 0x00, 0x7c, 0x2a, 0xbc, 0x01, 0x04, 0x30, 0xbe, 0x00, 0x05, 0x30, 0x7c, 0x2a, 0x05, 0x30, 0xbc, 0x01, 0x6b, 0x2a, 0x05, 0x30, 0xbc, 0x01, 0xbe, 0x00, 0x06, 0x30, 0x7c, 0x2a, 0x06, 0x30, 0x72, 0x2a, 0x06, 0x30, 0xbc, 0x01, 0xbe, 0x00, 0x07, 0x30, 0xbd, 0x00, 0xe1, 0x2a, 0x07, 0x30, 0x79, 0x2a,
++0x83, 0x12, 0x36, 0x08, 0x00, 0x3a, 0x03, 0x19, 0x25, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x2a, 0x2a, 0x03, 0x3a, 0x03, 0x19, 0x2f, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x36, 0x2a, 0x07, 0x3a, 0x03, 0x19, 0x3a, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x3e, 0x2a, 0x03, 0x3a, 0x03, 0x19, 0x40, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x44, 0x2a, 0x0f, 0x3a, 0x03, 0x19, 0x47, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x4d, 0x2a,
++0x03, 0x3a, 0x03, 0x19, 0x51, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x51, 0x2a, 0x07, 0x3a, 0x03, 0x19, 0x54, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x57, 0x2a, 0x03, 0x3a, 0x03, 0x19, 0x5a, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x5e, 0x2a, 0x1f, 0x3a, 0x03, 0x19, 0x61, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x65, 0x2a, 0x03, 0x3a, 0x03, 0x19, 0x69, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x6e, 0x2a, 0x07, 0x3a, 0x03, 0x19,
++0x71, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x76, 0x2a, 0x03, 0x3a, 0x03, 0x19, 0x78, 0x2a, 0x01, 0x3a, 0x03, 0x19, 0x7e, 0x2a, 0xe1, 0x2a, 0x63, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbd, 0x00, 0x64, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbe, 0x00, 0x65, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbc, 0x00,
++0xb6, 0x01, 0xc0, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd2, 0x00, 0x52, 0x1c, 0xf1, 0x2a, 0xc1, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbd, 0x00, 0x12, 0x23, 0x29, 0x30, 0x91, 0x00, 0x36, 0x08, 0x99, 0x00, 0x08, 0x00, 0xf1, 0x00, 0xf3, 0x01, 0x70, 0x08, 0x03, 0x19, 0x10, 0x2b, 0xf2, 0x01, 0xf2, 0x0a, 0xf0, 0x1b, 0x03, 0x2b,
++0x03, 0x10, 0xf0, 0x0d, 0xfd, 0x2a, 0x03, 0x10, 0xf3, 0x0d, 0x70, 0x08, 0x71, 0x02, 0x03, 0x1c, 0x0d, 0x2b, 0x70, 0x08, 0xf1, 0x02, 0x73, 0x14, 0x03, 0x10, 0xf0, 0x0c, 0xf2, 0x0b, 0x03, 0x2b, 0x73, 0x08, 0x08, 0x00, 0x15, 0x30, 0x91, 0x00, 0x3d, 0x08, 0x99, 0x00, 0x34, 0x30, 0x91, 0x00, 0x3c, 0x08, 0x99, 0x00, 0x35, 0x30, 0x91, 0x00, 0x3e, 0x08, 0x99, 0x00, 0x08, 0x00, 0x74, 0x08,
++0xf6, 0x00, 0x75, 0x08, 0xf7, 0x00, 0x00, 0x30, 0xf7, 0x1b, 0xff, 0x30, 0xf8, 0x00, 0xf9, 0x00, 0x76, 0x08, 0x08, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xd3, 0x00, 0x3f, 0x39, 0xf4, 0x00, 0x08, 0x00, 0x83, 0x12, 0x03, 0x13, 0x86, 0x01, 0x8b, 0x13, 0x2f, 0x30, 0x91, 0x00, 0x0c, 0x30, 0x99, 0x00, 0x03, 0x30, 0x92, 0x01, 0x0f, 0x12, 0x8d, 0x00, 0x8b, 0x12, 0x8e, 0x15, 0x0e, 0x11,
++0x8e, 0x14, 0x0e, 0x10, 0x81, 0x01, 0x8e, 0x16, 0x8b, 0x17, 0xb0, 0x01, 0xb1, 0x01, 0xb2, 0x01, 0xb3, 0x01, 0xac, 0x01, 0xad, 0x01, 0xae, 0x01, 0xaf, 0x01, 0xa0, 0x01, 0xa1, 0x01, 0xa2, 0x01, 0xa3, 0x01, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x83, 0x16, 0xa0, 0x01, 0xa1, 0x01, 0xa2, 0x01, 0xa3, 0x01, 0x83, 0x12, 0x06, 0x30, 0xcc, 0x01, 0xcf, 0x00, 0x0b, 0x30, 0xce, 0x00,
++0x09, 0x30, 0xb9, 0x00, 0x0c, 0x30, 0xba, 0x00, 0x09, 0x30, 0xbb, 0x00, 0x03, 0x30, 0xde, 0x14, 0xc9, 0x00, 0x06, 0x30, 0xca, 0x00, 0x02, 0x30, 0xc7, 0x00, 0xc8, 0x00, 0x83, 0x16, 0xac, 0x01, 0xad, 0x01, 0xae, 0x01, 0xaf, 0x01, 0xb0, 0x01, 0xb1, 0x01, 0xb2, 0x01, 0xb3, 0x01, 0x83, 0x12, 0xa8, 0x01, 0xa9, 0x01, 0xaa, 0x01, 0xab, 0x01, 0x83, 0x16, 0xa8, 0x01, 0xa9, 0x01, 0xaa, 0x01,
++0xab, 0x01, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x83, 0x12, 0x23, 0x30, 0xcb, 0x01, 0xd1, 0x00, 0x2d, 0x30, 0xd0, 0x00, 0x0b, 0x30, 0xb6, 0x00, 0x17, 0x30, 0xb7, 0x00, 0x04, 0x30, 0xb8, 0x01, 0x5e, 0x14, 0xbd, 0x00, 0x02, 0x30, 0xbc, 0x00, 0x04, 0x30, 0xbe, 0x00, 0xe4, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0x12, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0x12, 0x30, 0x5e, 0x12, 0xde, 0x12,
++0xcd, 0x01, 0x91, 0x00, 0x99, 0x01, 0x13, 0x30, 0x91, 0x00, 0x99, 0x01, 0x11, 0x30, 0x91, 0x00, 0x4d, 0x08, 0x99, 0x00, 0xbb, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc4, 0x00, 0x14, 0x30, 0x91, 0x00, 0x44, 0x08, 0x99, 0x00, 0xbe, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc2, 0x00, 0x16, 0x30, 0x91, 0x00, 0x42, 0x08, 0x99, 0x00,
++0xbf, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc0, 0x00, 0x17, 0x30, 0x91, 0x00, 0x40, 0x08, 0x99, 0x00, 0xc1, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbf, 0x00, 0x15, 0x30, 0x91, 0x00, 0x3f, 0x08, 0x99, 0x00, 0xc6, 0x01, 0xc5, 0x01, 0x08, 0x00, 0x5a, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfa, 0x00,
++0x5b, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfb, 0x00, 0x3f, 0x30, 0x7a, 0x05, 0xf4, 0x00, 0x7b, 0x08, 0x7f, 0x39, 0xf5, 0x00, 0x06, 0x30, 0xf6, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf5, 0x0d, 0xf6, 0x0d, 0xff, 0x0b, 0xf0, 0x2b, 0x74, 0x08, 0x75, 0x07, 0xac, 0x00, 0x00, 0x30, 0x03, 0x18, 0x01, 0x30, 0x76, 0x07, 0xad, 0x00, 0xae, 0x01, 0xad, 0x1b, 0xae, 0x03,
++0x2e, 0x08, 0xaf, 0x00, 0x5e, 0x30, 0x91, 0x00, 0x00, 0x00, 0xfa, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0x0d, 0x30, 0xf5, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xff, 0x0b, 0x0b, 0x2c, 0xf5, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0xf7, 0x1b, 0xff, 0x30, 0xf8, 0x00, 0xf9, 0x00, 0x76, 0x08, 0xac, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xad, 0x07, 0x78, 0x08,
++0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xae, 0x07, 0x79, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xaf, 0x07, 0x5f, 0x30, 0x91, 0x00, 0x00, 0x00, 0xfa, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0x13, 0x30, 0xf5, 0x01, 0xf6, 0x01, 0xf7, 0x01, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xf6, 0x0d, 0xf7, 0x0d, 0xff, 0x3e, 0x03, 0x1d, 0x35, 0x2c, 0x74, 0x08, 0xac, 0x07, 0x75, 0x08,
++0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xad, 0x07, 0x76, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xae, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xaf, 0x07, 0x62, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xa0, 0x00, 0x60, 0x30, 0xa1, 0x01, 0xa2, 0x01, 0xa3, 0x01, 0x91, 0x00, 0x00, 0x00, 0xfa, 0x25, 0x0a, 0x12,
++0x8a, 0x11, 0x07, 0x30, 0xf5, 0x01, 0xff, 0x00, 0x03, 0x10, 0xf4, 0x0d, 0xf5, 0x0d, 0xff, 0x0b, 0x64, 0x2c, 0xf5, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0xcf, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xa3, 0x07, 0x61, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfb, 0x00, 0x7f, 0x39, 0xf4, 0x00, 0x0d, 0x30, 0xf5, 0x01, 0xff, 0x00, 0x03, 0x10,
++0xf4, 0x0d, 0xf5, 0x0d, 0xff, 0x0b, 0x7f, 0x2c, 0xf5, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0xcf, 0x25, 0x0a, 0x12, 0x8a, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xa3, 0x07, 0x5c, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xba, 0x00, 0x5d, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xbb, 0x00, 0x6f, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12,
++0x03, 0x13, 0x16, 0x08, 0xcf, 0x00, 0x70, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xce, 0x00, 0xed, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xb4, 0x00, 0xde, 0x1c, 0xcb, 0x2c, 0x2f, 0x08, 0x33, 0x02, 0x03, 0x1d, 0xc1, 0x2c, 0x2e, 0x08, 0x32, 0x02, 0x03, 0x1d, 0xc1, 0x2c, 0x2d, 0x08, 0x31, 0x02, 0x03, 0x1d, 0xc1, 0x2c, 0x2c, 0x08,
++0x30, 0x02, 0x03, 0x18, 0xcb, 0x2c, 0xb0, 0x0a, 0x03, 0x19, 0xb1, 0x0a, 0x03, 0x19, 0xb2, 0x0a, 0x03, 0x19, 0xb3, 0x0a, 0x87, 0x2d, 0xdd, 0x30, 0xb0, 0x01, 0xb1, 0x01, 0xb2, 0x01, 0xb3, 0x01, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfa, 0x00, 0xde, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfb, 0x00, 0x05, 0x30, 0xf0, 0x00, 0x7b, 0x08,
++0x0a, 0x12, 0x8a, 0x11, 0xf7, 0x22, 0x0a, 0x12, 0x8a, 0x11, 0xf4, 0x00, 0x7a, 0x08, 0x7a, 0x07, 0x7a, 0x07, 0x74, 0x07, 0xcc, 0x00, 0x4f, 0x08, 0x4c, 0x02, 0x03, 0x18, 0xf7, 0x2c, 0xa4, 0x0a, 0x03, 0x19, 0xa5, 0x0a, 0x03, 0x19, 0xa6, 0x0a, 0x03, 0x19, 0xa7, 0x0a, 0x0d, 0x2d, 0x4c, 0x08, 0x4e, 0x02, 0x03, 0x18, 0x09, 0x2d, 0x83, 0x16, 0xa0, 0x0a, 0x03, 0x19, 0xa1, 0x0a, 0x03, 0x19,
++0xa2, 0x0a, 0x03, 0x19, 0xa3, 0x0a, 0x83, 0x12, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x12, 0x2d, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x83, 0x16, 0xa0, 0x01, 0xa1, 0x01, 0xa2, 0x01, 0xa3, 0x01, 0x83, 0x12, 0x23, 0x08, 0x27, 0x02, 0x03, 0x1d, 0x21, 0x2d, 0x22, 0x08, 0x26, 0x02, 0x03, 0x1d, 0x21, 0x2d, 0x21, 0x08, 0x25, 0x02, 0x03, 0x1d, 0x21, 0x2d, 0x20, 0x08,
++0x24, 0x02, 0x03, 0x1c, 0x33, 0x2d, 0xa4, 0x01, 0xa5, 0x01, 0xa6, 0x01, 0xa7, 0x01, 0x3a, 0x08, 0x39, 0x02, 0x03, 0x18, 0x2e, 0x2d, 0xb9, 0x0a, 0xde, 0x14, 0x87, 0x2d, 0x3a, 0x08, 0xb9, 0x00, 0x83, 0x12, 0xde, 0x10, 0x87, 0x2d, 0x23, 0x08, 0x83, 0x16, 0x23, 0x02, 0x03, 0x1d, 0x48, 0x2d, 0x83, 0x12, 0x22, 0x08, 0x83, 0x16, 0x22, 0x02, 0x03, 0x1d, 0x48, 0x2d, 0x83, 0x12, 0x21, 0x08,
++0x83, 0x16, 0x21, 0x02, 0x03, 0x1d, 0x48, 0x2d, 0x83, 0x12, 0x20, 0x08, 0x83, 0x16, 0x20, 0x02, 0x03, 0x1c, 0x30, 0x2d, 0xa0, 0x01, 0xa1, 0x01, 0xa2, 0x01, 0xa3, 0x01, 0x83, 0x12, 0x39, 0x08, 0x3b, 0x02, 0x03, 0x18, 0x55, 0x2d, 0xb9, 0x03, 0x2c, 0x2d, 0x3b, 0x08, 0x2f, 0x2d, 0xc9, 0x01, 0x5b, 0x2d, 0xc9, 0x01, 0xc9, 0x0a, 0xca, 0x01, 0xb6, 0x2d, 0x02, 0x30, 0xc9, 0x00, 0x5b, 0x2d,
++0x02, 0x30, 0xc9, 0x00, 0xca, 0x01, 0xca, 0x0a, 0xb6, 0x2d, 0x03, 0x30, 0x61, 0x2d, 0x03, 0x30, 0xc9, 0x00, 0x02, 0x30, 0x85, 0x2d, 0x03, 0x30, 0x84, 0x2d, 0x03, 0x30, 0xc9, 0x00, 0x04, 0x30, 0x85, 0x2d, 0x03, 0x30, 0xc9, 0x00, 0x05, 0x30, 0x85, 0x2d, 0x03, 0x30, 0xc9, 0x00, 0x06, 0x30, 0x85, 0x2d, 0x03, 0x30, 0x80, 0x2d, 0x04, 0x30, 0x80, 0x2d, 0x05, 0x30, 0x80, 0x2d, 0x06, 0x30,
++0xc9, 0x00, 0x07, 0x30, 0x85, 0x2d, 0x07, 0x30, 0xc9, 0x00, 0xca, 0x00, 0xb6, 0x2d, 0x39, 0x08, 0x00, 0x3a, 0x03, 0x19, 0x57, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x59, 0x2d, 0x03, 0x3a, 0x03, 0x19, 0x5d, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x60, 0x2d, 0x07, 0x3a, 0x03, 0x19, 0x65, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x67, 0x2d, 0x03, 0x3a, 0x03, 0x19, 0x6b, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x6d, 0x2d,
++0x0f, 0x3a, 0x03, 0x19, 0x71, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x75, 0x2d, 0x03, 0x3a, 0x03, 0x19, 0x79, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x7b, 0x2d, 0x07, 0x3a, 0x03, 0x19, 0x7d, 0x2d, 0x01, 0x3a, 0x03, 0x19, 0x7f, 0x2d, 0x03, 0x3a, 0x03, 0x19, 0x83, 0x2d, 0xb6, 0x2d, 0x02, 0x30, 0xc7, 0x00, 0xc8, 0x00, 0xba, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfa, 0x00,
++0x7a, 0x1c, 0xc9, 0x2d, 0xbb, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc9, 0x00, 0xe4, 0x25, 0x30, 0x30, 0x91, 0x00, 0x39, 0x08, 0x99, 0x00, 0x08, 0x00, 0xf7, 0x1b, 0xff, 0x30, 0xf8, 0x00, 0xf9, 0x00, 0x76, 0x08, 0xa0, 0x07, 0x77, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d, 0xa1, 0x07, 0x78, 0x08, 0x03, 0x11, 0x03, 0x18, 0x01, 0x3e, 0x03, 0x1d,
++0xa2, 0x07, 0x79, 0x08, 0x03, 0x11, 0x08, 0x00, 0x14, 0x30, 0x91, 0x00, 0x49, 0x08, 0x99, 0x00, 0x31, 0x30, 0x91, 0x00, 0x4a, 0x08, 0x99, 0x00, 0x32, 0x30, 0x91, 0x00, 0x47, 0x08, 0x99, 0x00, 0x33, 0x30, 0x91, 0x00, 0x48, 0x08, 0x99, 0x00, 0x08, 0x00, 0x74, 0x08, 0xf6, 0x00, 0x75, 0x08, 0xf7, 0x00, 0x00, 0x34, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xfb, 0x00, 0x3f, 0x39, 0xf4, 0x00,
++0x08, 0x00, 0x01, 0x30, 0x0a, 0x12, 0x8a, 0x11, 0x8d, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0x11, 0x3b, 0x0a, 0x12, 0x8a, 0x11, 0x31, 0x23, 0x0a, 0x12, 0x8a, 0x11, 0xe6, 0x30, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xb4, 0x00, 0xeb, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xc4, 0x00, 0xe4, 0x30, 0x83, 0x12,
++0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xb5, 0x00, 0xe5, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xb6, 0x00, 0x35, 0x08, 0x03, 0x1d, 0x3b, 0x2e, 0x34, 0x08, 0xbd, 0x00, 0xbe, 0x01, 0x44, 0x08, 0xbd, 0x07, 0x03, 0x18, 0xbe, 0x0a, 0x3e, 0x2e, 0x36, 0x08, 0xbd, 0x00, 0xbe, 0x01, 0x3d, 0x08, 0x83, 0x12,
++0xb5, 0x00, 0x18, 0x30, 0x91, 0x00, 0x35, 0x08, 0x99, 0x00, 0x20, 0x30, 0x91, 0x00, 0x01, 0x30, 0x99, 0x00, 0x14, 0x30, 0x86, 0x00, 0xec, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x6b, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0xc4, 0x1f, 0x4b, 0x2e, 0xdc, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xbf, 0x00, 0xdb, 0x30, 0x83, 0x12, 0x91, 0x00,
++0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xc0, 0x00, 0xde, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xc2, 0x00, 0xdd, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xc1, 0x00, 0xe0, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16,
++0xb8, 0x00, 0xdf, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xb7, 0x00, 0x05, 0x30, 0x83, 0x12, 0xd9, 0x00, 0x83, 0x16, 0x38, 0x08, 0x0a, 0x12, 0x8a, 0x11, 0x71, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0xdd, 0x00, 0x83, 0x16, 0x37, 0x08, 0x37, 0x07, 0x37, 0x07, 0x83, 0x12, 0x5d, 0x07, 0x83, 0x16, 0xc3, 0x00, 0x83, 0x12, 0x0c, 0x30, 0x5e, 0x11,
++0x83, 0x16, 0x40, 0x06, 0x03, 0x1d, 0xb5, 0x2e, 0x3f, 0x30, 0x3f, 0x06, 0x03, 0x1d, 0xb5, 0x2e, 0x07, 0x30, 0x41, 0x06, 0x03, 0x1d, 0xb5, 0x2e, 0x1c, 0x30, 0x42, 0x02, 0x03, 0x1c, 0xb5, 0x2e, 0x1b, 0x30, 0x43, 0x02, 0x83, 0x12, 0x03, 0x18, 0x5e, 0x15, 0x83, 0x12, 0x0c, 0x30, 0xde, 0x11, 0x83, 0x16, 0x40, 0x06, 0x03, 0x1d, 0xcd, 0x2e, 0x3f, 0x30, 0x3f, 0x06, 0x03, 0x1d, 0xcd, 0x2e,
++0x07, 0x30, 0x41, 0x06, 0x03, 0x1d, 0xcd, 0x2e, 0x1c, 0x30, 0x42, 0x02, 0x03, 0x1c, 0xcd, 0x2e, 0x18, 0x30, 0x43, 0x02, 0x83, 0x12, 0x03, 0x18, 0xde, 0x15, 0x83, 0x12, 0x4d, 0x08, 0x03, 0x1d, 0xd6, 0x2e, 0x5e, 0x1d, 0xda, 0x2e, 0xcd, 0x01, 0xcd, 0x0a, 0xda, 0x2e, 0x4d, 0x0b, 0xda, 0x2e, 0xde, 0x1d, 0xcd, 0x01, 0x11, 0x30, 0x91, 0x00, 0x4d, 0x08, 0x99, 0x00, 0xc7, 0x30, 0x91, 0x00,
++0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xb9, 0x00, 0xc8, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xba, 0x00, 0xc9, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xbb, 0x00, 0xca, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16,
++0xbc, 0x00, 0x12, 0x2f, 0x83, 0x16, 0x39, 0x08, 0x83, 0x12, 0xc6, 0x00, 0x83, 0x16, 0x3a, 0x08, 0x0f, 0x2f, 0x83, 0x16, 0x3b, 0x08, 0x83, 0x12, 0xc6, 0x00, 0x83, 0x16, 0x3c, 0x08, 0x83, 0x12, 0xc5, 0x00, 0x1b, 0x2f, 0x83, 0x12, 0x4d, 0x08, 0x00, 0x3a, 0x03, 0x19, 0x02, 0x2f, 0x01, 0x3a, 0x03, 0x19, 0x09, 0x2f, 0x1b, 0x2f, 0x46, 0x08, 0x42, 0x02, 0x03, 0x18, 0x21, 0x2f, 0xc2, 0x0a,
++0x25, 0x2f, 0x42, 0x08, 0x46, 0x02, 0x03, 0x1c, 0xc2, 0x03, 0x45, 0x08, 0x40, 0x02, 0x03, 0x18, 0x2b, 0x2f, 0xc0, 0x0a, 0x2f, 0x2f, 0x40, 0x08, 0x45, 0x02, 0x03, 0x1c, 0xc0, 0x03, 0xbc, 0x30, 0x91, 0x00, 0x00, 0x00, 0x6b, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0x44, 0x1c, 0x43, 0x2f, 0xbe, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc3, 0x00, 0x16, 0x30,
++0x91, 0x00, 0x43, 0x08, 0x47, 0x2f, 0x16, 0x30, 0x83, 0x12, 0x91, 0x00, 0x42, 0x08, 0x99, 0x00, 0xbd, 0x30, 0x91, 0x00, 0x00, 0x00, 0x6b, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0x44, 0x1c, 0x5c, 0x2f, 0xbf, 0x30, 0x83, 0x12, 0x91, 0x00, 0x00, 0x00, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0xc1, 0x00, 0x17, 0x30, 0x91, 0x00, 0x41, 0x08, 0x60, 0x2f, 0x17, 0x30, 0x83, 0x12, 0x91, 0x00, 0x40, 0x08,
++0x99, 0x00, 0x42, 0x08, 0x46, 0x06, 0x03, 0x1d, 0x1b, 0x2f, 0x40, 0x08, 0x45, 0x06, 0x03, 0x1d, 0x1b, 0x2f, 0x4d, 0x08, 0x4a, 0x2e, 0x83, 0x12, 0x03, 0x13, 0x16, 0x08, 0x83, 0x16, 0xc4, 0x00, 0x08, 0x00, 0x83, 0x12, 0xda, 0x00, 0xdc, 0x01, 0x59, 0x08, 0x03, 0x19, 0x8b, 0x2f, 0xdb, 0x01, 0xdb, 0x0a, 0xd9, 0x1b, 0x7e, 0x2f, 0x03, 0x10, 0xd9, 0x0d, 0x78, 0x2f, 0x03, 0x10, 0xdc, 0x0d,
++0x59, 0x08, 0x5a, 0x02, 0x03, 0x1c, 0x88, 0x2f, 0x59, 0x08, 0xda, 0x02, 0x5c, 0x14, 0x03, 0x10, 0xd9, 0x0c, 0xdb, 0x0b, 0x7e, 0x2f, 0x5c, 0x08, 0x08, 0x00, 0xd9, 0x00, 0x59, 0x08, 0xd9, 0x0a, 0x84, 0x00, 0x0a, 0x12, 0x8a, 0x11, 0x9f, 0x27, 0x0a, 0x12, 0x8a, 0x11, 0xda, 0x00, 0x5a, 0x08, 0x03, 0x19, 0x08, 0x00, 0x0c, 0x30, 0x91, 0x00, 0x5a, 0x08, 0x99, 0x00, 0x8e, 0x2f, 0x07, 0x30,
++0x8a, 0x00, 0x04, 0x08, 0x84, 0x0a, 0x82, 0x07, 0x00, 0x34, 0x73, 0x34, 0x74, 0x34, 0x61, 0x34, 0x72, 0x34, 0x74, 0x34, 0x0a, 0x34, 0x00, 0x34, 0x64, 0x00, 0x80, 0x01, 0x84, 0x0a, 0x04, 0x06, 0x03, 0x19, 0x00, 0x34, 0x04, 0x06, 0xad, 0x2f
++};
++
++struct m88tc6800_priv {
++	struct m88tc6800_config config;
++	struct i2c_adapter *i2c;
++	bool mcu_status;
++	u32 frequency_hz;
++	u32 bandwidth_hz;
++	u32 ldiv;
++	u32 fvco_tg;
++};
++
++static int m88tc6800_write_reg(struct m88tc6800_priv *priv, u8 reg, u8 val)
++{
++	u8 buf[] = { reg, val };
++	struct i2c_msg msg = { .addr = priv->config.addr, .flags = 0,
++			       .buf = buf, .len = 2 };
++	int ret;
++
++	ret = i2c_transfer(priv->i2c, &msg, 1);
++	if (ret == 1) {
++		ret = 0;
++	} else {
++		dev_warn(&priv->i2c->dev, "i2c wr failed=%d reg=%02x ", ret, reg);
++		ret = -EREMOTEIO;
++	}
++	return ret;
++}
++
++static int m88tc6800_write_data(struct m88tc6800_priv *priv, u8 *data, size_t len)
++{
++	struct i2c_msg msg = { .addr = priv->config.addr, .flags = 0,
++			       .buf = data, .len = len };
++	int ret;
++
++	ret = i2c_transfer(priv->i2c, &msg, 1);
++	if (ret == 1) {
++		ret = 0;
++	} else {
++		dev_warn(&priv->i2c->dev, "i2c data failed=%d ", ret);
++		ret = -EREMOTEIO;
++	}
++	return ret;
++}
++
++static int m88tc6800_read_reg(struct m88tc6800_priv *priv, u8 reg, u8 *val)
++{
++	
++	u8 buf[1] = { reg };
++	struct i2c_msg msg[] = {
++		{ .addr = priv->config.addr, .flags = 0,
++		  .buf = buf, .len = 1 },
++		{ .addr = priv->config.addr, .flags = I2C_M_RD,
++		  .buf = val, .len = 1 },
++	};
++	int ret;
++
++	ret = i2c_transfer(priv->i2c, msg, 2);
++	if (ret == 2) {
++		ret = 0;
++	} else {
++		dev_warn(&priv->i2c->dev, "i2c rd failed=%d reg=%02x ", ret, reg);
++		ret = -EREMOTEIO;
++	}
++	return ret;
++}
++
++static int m88tc6800_set_reg_bits(struct m88tc6800_priv *priv, u8 reg, u8 val, u8 begin_bit, u8 end_bit)
++{
++	u8 val_mask = ((1 << (end_bit - begin_bit + 1)) - 1) << begin_bit;
++	u8 reg_data;
++	int ret;
++
++	ret = m88tc6800_read_reg(priv, reg, &reg_data);
++	if (ret)
++		return ret;
++
++	reg_data &= ~val_mask;
++	val = (val << begin_bit) & val_mask;
++	reg_data |= val;
++
++  ret = m88tc6800_write_reg(priv, reg, reg_data);
++  return ret;
++}
++
++uint32_t m88tc6800_expand_reg_bits(struct m88tc6800_priv *priv, u8 reg_expand, u8 reg, u8 val, u8 start_bit, u8 end_bit)
++{
++  byte reg_data_00;
++  uint8_t reg_addr_00 = reg_expand;
++  uint8_t reg_data_01 = reg;
++  int extraout_r2 = val;
++  uint extraout_r3 = end_bit;
++  uint uVar1;
++  uint uVar2;
++  uint uVar3;
++  byte local_31 [5];
++  
++  uVar2 = (uint)start_bit;
++  local_31[0] = 0;
++  uVar1 = uVar2;
++  uVar3 = extraout_r3;
++  if (uVar2 <= extraout_r3) {
++    uVar1 = extraout_r3;
++    uVar3 = uVar2;
++  }
++  uVar3 = (uVar3 + 7) - uVar1;
++  m88tc6800_write_reg(priv, reg_addr_00,reg_data_01);
++  m88tc6800_read_reg(priv, reg_addr_00 + 0x1,local_31);
++  reg_data_00 = (local_31[0] & ~(byte)((int)(0xff << (uVar3 & 0xff) & 0xffU) >> (7 - uVar1 & 0xff))) |
++                (byte)((int)(extraout_r2 << (uVar3 & 0xff) & 0xffU) >> (7 - uVar1 & 0xff));
++  local_31[0] = reg_data_00;
++  m88tc6800_write_reg(priv, reg_addr_00,reg_data_01);
++  m88tc6800_write_reg(priv, reg_addr_00 + 0x1,reg_data_00);
++  return 0;
++}
++
++static int m88tc6800_write_fw(struct m88tc6800_priv *priv)
++{
++	u8 expected_fw_ver = 0xc;
++	u8 reg_data;
++	u8 buf[65] = {0xc0};
++	int ret;
++	size_t i;
++
++	dev_info(&priv->i2c->dev, "M88TC6800 uploading firmware\n");
++
++	m88tc6800_set_reg_bits(priv, 0x05, 1, 2, 2);
++	m88tc6800_write_reg(priv, 0xc2, 1);
++
++	for (i = 0; i < sizeof(m88tc6800_fw); i += (sizeof(buf) - 1)) {
++		size_t len = min(sizeof(buf) - 1, sizeof(m88tc6800_fw) - i);
++		memcpy(&buf[1], &m88tc6800_fw[i], len);
++		ret = m88tc6800_write_data(priv, buf, len + 1);
++		if (ret)
++			return ret;
++	}
++
++	m88tc6800_write_reg(priv, 0xc2, 0);
++
++	/* check fw upload status */
++	m88tc6800_read_reg(priv, 0xc8, &reg_data);
++	dev_info(&priv->i2c->dev, "M88TC6800 fw version=%x\n", reg_data);
++	m88tc6800_set_reg_bits(priv, 0x05, 0, 2, 2);
++
++	if (reg_data == expected_fw_ver) {
++		priv->mcu_status = true;
++		m88tc6800_set_reg_bits(priv, 0x3e, 0, 5, 5);
++		return 0;
++	}
++
++	dev_err(&priv->i2c->dev, "M88TC6800 fw version mismatch, expected %x\n", expected_fw_ver);
++	priv->mcu_status = false;
++	return -1;
++}
++
++static int m88tc6800_init(struct dvb_frontend *fe)
++{
++	struct m88tc6800_priv *priv = fe->tuner_priv;
++	u8 reg_data;
++	int ret;
++
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 1);
++
++	ret = m88tc6800_read_reg(priv, 0x3e, &reg_data);
++	if (ret)
++		goto err;
++
++	if ((reg_data & 0x20) == 0 && priv->mcu_status == true)
++		goto done;
++
++	ret = m88tc6800_write_fw(priv);
++	if (ret)
++		goto err;
++
++done:
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 0);
++	return 0;
++
++err:
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 0);
++	dev_err(&priv->i2c->dev, "%s: failed=%d\n", __func__, ret);
++	return ret;
++}
++
++static void m88tc6800_preset(struct m88tc6800_priv *priv)
++{
++    u8 reg_data;
++
++    if (0 < priv->config.mode && priv->config.mode <= 2) {
++        m88tc6800_write_reg(priv, 0x0b, 0x7d);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x0b, 0x6d);
++    }
++    m88tc6800_write_reg(priv, 0x0c, 0xe3);
++    m88tc6800_write_reg(priv, 0x0d, 0xc4);
++    m88tc6800_read_reg(priv, 0x9a, &reg_data);
++    m88tc6800_write_reg(priv, 0x9a, reg_data & 0xf);
++    m88tc6800_write_reg(priv, 0x9d, 0x3f);
++    m88tc6800_write_reg(priv, 0x31, 0x97);
++    m88tc6800_write_reg(priv, 0xab, 0xd9);
++    m88tc6800_write_reg(priv, 0xb0, 0x09);
++    m88tc6800_write_reg(priv, 0xbd, 0x02);
++    m88tc6800_write_reg(priv, 0xb9, 0x99);
++    m88tc6800_write_reg(priv, 0x58, 0x11);
++    if (priv->config.xtal == 24000) {
++        m88tc6800_write_reg(priv, 0x39, 0x77);
++        m88tc6800_write_reg(priv, 0x3a, 0x11);
++        m88tc6800_write_reg(priv, 0x7e, 0x12);
++    }
++    else if (priv->config.xtal == 27000) {
++        m88tc6800_write_reg(priv, 0x7e, 0x13);
++    }
++    m88tc6800_write_reg(priv, 0x80, 0x00);
++    m88tc6800_write_reg(priv, 0x82, 0x00);
++    m88tc6800_write_reg(priv, 0x10, 0x00);
++    m88tc6800_write_reg(priv, 0x66, 0x00);
++}
++
++static void m88tc6800_set_rf_frontend(struct m88tc6800_priv *priv, u32 freq_khz)
++{
++    u8 reg_data;
++
++    if (priv->config.int_im == 0) {
++        m88tc6800_write_reg(priv, 0x88, 0x27);
++        m88tc6800_write_reg(priv, 0x89, 0x2b);
++        m88tc6800_write_reg(priv, 0x8a, 0x67);
++        m88tc6800_write_reg(priv, 0x39, 0x69);
++        m88tc6800_write_reg(priv, 0x3a, 0x12);
++        if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++            m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x22);
++            m88tc6800_write_reg(priv, 0xfd, 0x1a);
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x8b, 0xaa);
++            m88tc6800_write_reg(priv, 0xfd, 0x12);
++        }
++    }
++    else if (priv->config.int_im == 1) {
++        m88tc6800_write_reg(priv, 0x88, 0x1b);
++        m88tc6800_write_reg(priv, 0x89, 0x2b);
++        m88tc6800_write_reg(priv, 0x8a, 0x1b);
++        m88tc6800_write_reg(priv, 0x39, 0x69);
++        m88tc6800_write_reg(priv, 0x3a, 0x12);
++        if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++            m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x22);
++            m88tc6800_write_reg(priv, 0xfd, 0x1a);
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x8b, 0xaa);
++            m88tc6800_write_reg(priv, 0xfd, 0x12);
++        }
++    }
++    else if (priv->config.int_im == 2) {
++        m88tc6800_write_reg(priv, 0x88, 0x2b);
++        m88tc6800_write_reg(priv, 0x89, 0x2b);
++        m88tc6800_write_reg(priv, 0x8a, 0xab);
++        m88tc6800_write_reg(priv, 0x39, 0x69);
++        if (freq_khz <= 602000) {
++            m88tc6800_write_reg(priv, 0x3a, 0x2d);
++            if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x55);
++                m88tc6800_write_reg(priv, 0xfd, 0x1a);
++            }
++            else {
++                m88tc6800_read_reg(priv, 0x8b, &reg_data);
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : reg_data | 0x88);
++                m88tc6800_write_reg(priv, 0xfd, 0x12);
++            }
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x3a, 0x09);
++            if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x11);
++                m88tc6800_write_reg(priv, 0xfd, 0x1a);
++            }
++            else {
++                m88tc6800_read_reg(priv, 0x8b, &reg_data);
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : reg_data | 0x88);
++                m88tc6800_write_reg(priv, 0xfd, 0x12);
++            }
++        }
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x88, 0x2b);
++        m88tc6800_write_reg(priv, 0x89, 0x2b);
++        m88tc6800_write_reg(priv, 0x8a, 0xab);
++        m88tc6800_write_reg(priv, 0x39, 0x69);
++        if (freq_khz <= 602000) {
++            m88tc6800_write_reg(priv, 0x3a, 0x2d);
++            if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x55);
++                m88tc6800_write_reg(priv, 0xfd, 0x1a);
++            }
++            else {
++                m88tc6800_write_reg(priv, 0x8b, 0xaa);
++                m88tc6800_write_reg(priv, 0xfd, 0x12);
++            }
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x3a, 0x09);
++            if ((priv->config.mode == 0 || priv->config.mode > 2) || priv->config.int_lt < 2) {
++                m88tc6800_write_reg(priv, 0x8b, priv->config.custom_cfg == 1 ? 0xaa : 0x11);
++                m88tc6800_write_reg(priv, 0xfd, 0x1a);
++            }
++            else {
++                m88tc6800_write_reg(priv, 0x8b, 0xaa);
++                m88tc6800_write_reg(priv, 0xfd, 0x12);
++            }
++        }
++    }
++    if (freq_khz > 112000) {
++        if (freq_khz <= 334000) {
++            m88tc6800_write_reg(priv, 0x7f, 0x04);
++            m88tc6800_write_reg(priv, 0x92, 0x8c);
++            m88tc6800_write_reg(priv, 0x87, 0xf0);
++            m88tc6800_write_reg(priv, 0x90, 0x49);
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x7f, 0x00);
++            m88tc6800_write_reg(priv, 0x92, 0x8c);
++            m88tc6800_write_reg(priv, 0x87, 0xf0);
++            if (freq_khz <= 451000) {
++                m88tc6800_write_reg(priv, 0x90, 0x49);
++            }
++            else {
++                m88tc6800_write_reg(priv, 0x90, 0x4a);
++            }
++        }
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x7f, 0x08);
++        m88tc6800_write_reg(priv, 0x92, 0x8c);
++        m88tc6800_write_reg(priv, 0x87, 0xf0);
++        m88tc6800_write_reg(priv, 0x90, 0x49);
++    }
++    m88tc6800_write_reg(priv, 0xaa, 0x84);
++    m88tc6800_write_reg(priv, 0xa9, 0xf6);
++    m88tc6800_write_reg(priv, 0x98, 0xf8);
++    if (freq_khz > 700000 && freq_khz <= 900000) {
++        m88tc6800_write_reg(priv, 0x99, 0xa5);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x99, 0xb6);
++    }
++    m88tc6800_write_reg(priv, 0x26, 0x11);
++    if (priv->config.harmonic_imp != 1) {
++        return;
++    }
++    if (freq_khz >= 366000 && freq_khz <= 374000) {
++        m88tc6800_write_reg(priv, 0x94, 0x29);
++    }
++    else if ((freq_khz >= 480000 && freq_khz <= 492000) || (freq_khz >= 610000 && freq_khz <= 624000)) {
++        m88tc6800_write_reg(priv, 0x94, 0x15);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x94, 0x01);
++    }
++    m88tc6800_write_reg(priv, 0x39, 0x0e);
++    m88tc6800_write_reg(priv, 0x3a, 0x04);
++    m88tc6800_write_reg(priv, 0x39, 0x0f);
++    m88tc6800_write_reg(priv, 0x3a, 0x04);
++    m88tc6800_write_reg(priv, 0x39, 0x10);
++
++    if ((freq_khz >= 366000 && freq_khz <= 374000) ||
++            (freq_khz >= 480000 && freq_khz <= 492000) ||
++            (freq_khz >= 610000 && freq_khz <= 624000) ||
++            (freq_khz >= 800000 && freq_khz <= 820000)) {
++        m88tc6800_write_reg(priv, 0x3a, 0x02);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x3a, 0x01);
++    }
++}
++
++static u8 m88tc6800_get_mixer_type(u32 freq_khz)
++{
++    if (freq_khz <= 334000) {
++        return 2;
++    }
++    if ((freq_khz >= 480000 && freq_khz <= 492000) ||
++           (freq_khz >= 610000 && freq_khz <= 624000) ||
++           (freq_khz >= 800000 && freq_khz <= 820000) ||
++           (freq_khz >= 366000 && freq_khz <= 374000)) {
++        return 3;
++    }
++    return 1;
++}
++
++static void m88tc6800_set_mixer(struct m88tc6800_priv *priv, u32 freq_khz, u8 mixer_type)
++{
++    u8 tmp = mixer_type;
++    if (mixer_type == 2) {
++        if (freq_khz >= 125000) {
++            if (freq_khz < 167000) {
++                m88tc6800_write_reg(priv, 0x2f, 0x10);
++            }
++            else if (freq_khz < 250000) {
++                m88tc6800_write_reg(priv, 0x2f, 0x21);
++            }
++            else if (freq_khz < 335000) {
++                m88tc6800_write_reg(priv, 0x2f, 0x32);
++            }
++            else {
++                m88tc6800_write_reg(priv, 0x2f, 0x43);
++            }
++        }
++        else {
++            m88tc6800_write_reg(priv, 0x2f, 0x00);
++        }
++    }
++    else {
++        if (mixer_type != 3) {
++            tmp = 1;
++        }
++        m88tc6800_write_reg(priv, 0x2f, 0x00);
++    }
++    m88tc6800_set_reg_bits(priv, 0x0b, tmp, 0, 1);
++    if (freq_khz >= 330000 && freq_khz <= 400000) {
++        m88tc6800_write_reg(priv, 0x32, 0x04);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x32, 0x00);
++    }
++}
++
++static void m88tc6800_set_lo(struct m88tc6800_priv *priv, u32 freq_khz, u8 mixer_type)
++{
++    u8 reg_data;
++    if (freq_khz < 500000 && mixer_type == 2) {
++        if (freq_khz < 63000) {
++            reg_data = 0x8b;
++            priv->ldiv = 0x80;
++        }
++        else if (freq_khz < 83000) {
++            reg_data = 0x7a;
++            priv->ldiv = 0x60;
++        }
++        else if (freq_khz < 125000) {
++            reg_data = 0x0a;
++            priv->ldiv = 0x40;
++        }
++        else if (freq_khz < 167000) {
++            reg_data = 0x0d;
++            priv->ldiv = 0x30;
++        }
++        else if (freq_khz < 250000) {
++            reg_data = 0x09;
++            priv->ldiv = 0x20;
++        }
++        else if (freq_khz < 335000) {
++            reg_data = 0x0c;
++            priv->ldiv = 0x18;
++        }
++        else {
++            reg_data = 0x08;
++            priv->ldiv = 0x10;
++        }
++    }
++    else if (freq_khz < 250000 || mixer_type != 3) {
++        if (freq_khz < 56000) {
++            reg_data = 0x0b;
++            priv->ldiv = 0x80;
++        }
++        else if (freq_khz < 83000) {
++            reg_data = 0x7a;
++            priv->ldiv = 0x60;
++        }
++        else if (freq_khz < 125000) {
++            reg_data = 0x0a;
++            priv->ldiv = 0x40;
++        }
++        else if (freq_khz < 167000) {
++            reg_data = 0x79;
++            priv->ldiv = 0x30;
++        }
++        else if (freq_khz < 250000) {
++            reg_data = 0x09;
++            priv->ldiv = 0x20;
++        }
++        else if (freq_khz < 335000) {
++            reg_data = 0x78;
++            priv->ldiv = 0x18;
++        }
++        else if (freq_khz < 500000) {
++            reg_data = 0x08;
++            priv->ldiv = 0x10;
++        }
++        else if (freq_khz < 667000) {
++            reg_data = 0x74;
++            priv->ldiv = 0x0c;
++        }
++        else {
++            reg_data = 0x04;
++            priv->ldiv = 0x08;
++        }
++    }
++    else {
++        if (freq_khz < 333000) {
++            reg_data = 0xf8;
++            priv->ldiv = 0x18;
++        }
++        else if (freq_khz < 500000) {
++            reg_data = 0x88;
++            priv->ldiv = 0x10;
++        }
++        else if (freq_khz < 666000) {
++            reg_data = 0x74;
++            priv->ldiv = 0x0c;
++        }
++        else {
++            reg_data = 0x04;
++            priv->ldiv = 0x08;
++        }
++    }
++    priv->fvco_tg = freq_khz * priv->ldiv;
++    if (priv->fvco_tg < 6700000) {
++        m88tc6800_set_reg_bits(priv, 0x13, 4, 3, 5);
++    }
++    else {
++        m88tc6800_set_reg_bits(priv, 0x13, 7, 3, 5);
++    }
++    m88tc6800_write_reg(priv, 0x14, reg_data);
++}
++
++void m88tc6800_set_pll(struct m88tc6800_priv *priv)
++{
++  uint uVar1;
++  byte bVar2;
++  uint32_t uVar3;
++  uint32_t uVar4;
++  uint uVar5;
++  uint uVar6;
++  uint uVar7;
++  uint8_t uVar8;
++  int extraout_r1;
++  int extraout_r1_00;
++  char cVar9;
++  int iVar10;
++  byte bVar11;
++  uint uVar12;
++  uint uVar13;
++  uint8_t reg_data;
++  uint uVar14;
++  uint uVar15;
++  bool bVar16;
++  uint uVar17;
++  byte local_38;
++
++  uVar4 = priv->fvco_tg;
++  uVar3 = priv->config.xtal;
++  uVar1 = priv->config.xtal >> 1;
++  uVar12 = priv->config.xtal * 2;
++  if (priv->config.xtal == 24000) {
++    iVar10 = priv->fvco_tg / priv->ldiv;
++    if (0x176e < iVar10 - 0x518b1U) {
++      cVar9 = '\0';
++      uVar13 = 48000;
++      goto LAB_00089804;
++    }
++    uVar6 = 0x5dc;
++    cVar9 = '\0';
++    uVar13 = 24000;
++LAB_00089808:
++    uVar5 = uVar4 / uVar6;
++    extraout_r1_00 = uVar4 % uVar6;
++    uVar6 = (extraout_r1_00 << 0xc) / uVar6;
++  }
++  else {
++    if (priv->config.xtal == 27000) {
++      iVar10 = (priv->fvco_tg / 27000 -
++               (((int)((ulonglong)(priv->fvco_tg >> 2) * 0x4dac1b9d >>
++                      0x20) << 0x15) >> 0x1f)) * 27000;
++      if (((iVar10 + 10U < priv->fvco_tg) &&
++          (priv->fvco_tg < iVar10 + 0x3f2U)) ||
++         ((priv->fvco_tg < iVar10 - 10U &&
++          (iVar10 - 0x3f2U < priv->fvco_tg)))) {
++        cVar9 = '\x02';
++        uVar13 = 18000;
++      }
++      else if ((iVar10 + 0x3fcU < priv->fvco_tg) &&
++              (priv->fvco_tg < iVar10 + 0x7e4U)) {
++        cVar9 = '\x01';
++        uVar13 = 18000;
++      }
++      else if (priv->fvco_tg < iVar10 - 0x3fcU) {
++        cVar9 = iVar10 - 0x7e4U < priv->fvco_tg;
++        uVar13 = 18000;
++        if (!(bool)cVar9) {
++          uVar13 = 54000;
++        }
++      }
++      else {
++        cVar9 = '\0';
++        uVar13 = 54000;
++      }
++LAB_00089804:
++      uVar6 = uVar13 >> 4;
++      goto LAB_00089808;
++    }
++    uVar13 = uVar12;
++    if (uVar12 == 9000 || uVar12 == 27000) {
++      uVar6 = uVar12 >> 3;
++      iVar10 = priv->fvco_tg << 1;
++      uVar5 = iVar10 / uVar6;
++      extraout_r1 = iVar10 % uVar6;
++      cVar9 = '\0';
++      uVar6 = (extraout_r1 << 0xc) / uVar6;
++    }
++    else {
++      cVar9 = '\0';
++      if (uVar12 != 0x34bc) goto LAB_00089804;
++      uVar5 = (priv->fvco_tg * 4) / 0xd2f;
++      uVar6 = (((priv->fvco_tg * 4) % 0xd2f) * 0x1000) / 0xd2f;
++    }
++  }
++  uVar15 = (uVar5 << 0x12) >> 0x16;
++  uVar14 = uVar5 & 0xf;
++  if ((uVar6 & 0xfff) - 0x21 < 0xfbf) {
++    reg_data = (uint8_t)uVar6;
++    bVar16 = true;
++    local_38 = (byte)((uVar6 << 0x14) >> 0x1c) | 0x30;
++    uVar6 = uVar13 * (uVar6 & 0xfff) >> 0x10;
++  }
++  else {
++    if ((uVar6 & 0x800) != 0) {
++      uVar15 = (uVar5 + 1) * 0x40000 >> 0x16;
++      uVar14 = uVar5 + 1 & 0xf;
++    }
++    bVar16 = false;
++    reg_data = 0x0;
++    local_38 = 0x30;
++    uVar6 = 0;
++  }
++  uVar6 = uVar13 * uVar15 + uVar6 + (uVar13 * uVar14 >> 4);
++  if (uVar6 < 8000000) {
++    uVar6 = (uVar6 * -4 + 32000000) / 0x9eb1;
++  }
++  else {
++    uVar6 = -(((uVar6 + 0x3f85ee00) * 4) / 0x9eb1);
++  }
++  uVar7 = uVar6 + 0x100;
++  uVar17 = uVar7 * 0x80000 >> 0x18;
++  uVar5 = (uVar17 & 1) + (uVar7 >> 6) & 0xff;
++  if (uVar3 == uVar13) {
++    uVar17 = uVar17 - ((int)(uVar6 << 0x1b) >> 0x1f);
++    m88tc6800_write_reg(priv, 0x4e,0x11);
++    uVar8 = 0x11;
++LAB_000898b0:
++    uVar5 = uVar17 & 0xff;
++    m88tc6800_write_reg(priv, 0x4f,uVar8);
++    m88tc6800_write_reg(priv, 0x4e,0x10);
++    uVar8 = 0x8;
++  }
++  else {
++    if (uVar13 == uVar12 / 3) {
++      m88tc6800_write_reg(priv, 0x4e,0x11);
++      m88tc6800_write_reg(priv, 0x4f,0x33);
++      m88tc6800_write_reg(priv, 0x4e,0x10);
++      m88tc6800_write_reg(priv, 0x4f,0xb);
++      m88tc6800_write_reg(priv, 0x4e,0x15);
++      uVar5 = uVar5 + (uVar17 - ((int)(uVar6 << 0x1b) >> 0x1f)) & 0xff;
++      m88tc6800_write_reg(priv, 0x4f,0x43);
++      goto LAB_00089584;
++    }
++    if (uVar13 == uVar3 / 3) {
++      uVar12 = uVar7 * 0x100000 >> 0x18;
++      m88tc6800_write_reg(priv, 0x4e,0x11);
++      m88tc6800_write_reg(priv, 0x4f,0x33);
++      m88tc6800_write_reg(priv, 0x4e,0x10);
++      m88tc6800_write_reg(priv, 0x4f,0x8);
++      m88tc6800_write_reg(priv, 0x4e,0x15);
++      uVar5 = ((uVar17 + uVar12) - ((int)(uVar6 << 0x1c) >> 0x1f)) + (uVar12 & 1) & 0xff;
++      m88tc6800_write_reg(priv, 0x4f,0x63);
++      goto LAB_00089584;
++    }
++    if (uVar1 == uVar13) {
++      uVar17 = (uVar7 >> 4) - ((int)(uVar6 << 0x1c) >> 0x1f);
++      m88tc6800_write_reg(priv, 0x4e,0x11);
++      uVar8 = 0x22;
++      goto LAB_000898b0;
++    }
++    m88tc6800_write_reg(priv, 0x4e,0x11);
++    m88tc6800_write_reg(priv, 0x4f,0x11);
++    m88tc6800_write_reg(priv, 0x4e,0x10);
++    uVar8 = 0xb;
++  }
++  m88tc6800_write_reg(priv, 0x4f,uVar8);
++  m88tc6800_write_reg(priv, 0x4e,0x15);
++  m88tc6800_write_reg(priv, 0x4f,0x13);
++LAB_00089584:
++  if (bVar16) {
++    m88tc6800_write_reg(priv, 0x4e,0x12);
++    uVar5 = uVar5 - 1 & 0xff;
++    m88tc6800_write_reg(priv, 0x4f,0x21);
++  }
++  else {
++    m88tc6800_write_reg(priv, 0x4e,0x12);
++    m88tc6800_write_reg(priv, 0x4f,0x0);
++  }
++  if (cVar9 == '\x01') {
++    uVar5 = uVar5 >> 1;
++  }
++  else if (cVar9 == '\x02') {
++    uVar5 = uVar5 >> 2;
++  }
++  if (uVar5 < 2) {
++    uVar5 = 2;
++  }
++  bVar11 = (byte)uVar5;
++  if (0xe < uVar5) {
++    bVar11 = 0xf;
++  }
++  m88tc6800_write_reg(priv, 0x4e,0xa);
++  m88tc6800_write_reg(priv, 0x4f,0x63);
++  m88tc6800_write_reg(priv, 0x4e,0xf);
++  m88tc6800_write_reg(priv, 0x4f,0x3d);
++  m88tc6800_write_reg(priv, 0x4e,0xb);
++  m88tc6800_write_reg(priv, 0x4f,0xa1);
++  m88tc6800_write_reg(priv, 0x3d,0xff);
++  m88tc6800_write_reg(priv, 0x4e,0x1c);
++  m88tc6800_write_reg(priv, 0x4f,0x7e);
++  bVar2 = (byte)(uVar14 << 3);
++  if (bVar16) {
++    m88tc6800_write_reg(priv, 0x4e,0x19);
++    m88tc6800_write_reg(priv, 0x4f,bVar2 | 3);
++    m88tc6800_write_reg(priv, 0x4e,0x19);
++    m88tc6800_write_reg(priv, 0x4f,bVar2 | 7);
++  }
++  else {
++    m88tc6800_write_reg(priv, 0x4e,0x19);
++    m88tc6800_write_reg(priv, 0x4f,bVar2 | 2);
++    m88tc6800_write_reg(priv, 0x4e,0x19);
++    m88tc6800_write_reg(priv, 0x4f,bVar2 | 6);
++  }
++  m88tc6800_write_reg(priv, 0x4e,0x17);
++  m88tc6800_write_reg(priv, 0x4f,(byte)(uVar15 >> 8) | 0xc);
++  m88tc6800_write_reg(priv, 0x4e,0x18);
++  m88tc6800_write_reg(priv, 0x4f,(uint8_t)uVar15);
++  m88tc6800_write_reg(priv, 0x4e,0x1a);
++  m88tc6800_write_reg(priv, 0x4f,local_38);
++  m88tc6800_write_reg(priv, 0x4e,0x1b);
++  m88tc6800_write_reg(priv, 0x4f,reg_data);
++  m88tc6800_write_reg(priv, 0x4e,0xe);
++  m88tc6800_write_reg(priv, 0x4f,0x58);
++  m88tc6800_write_reg(priv, 0x4e,0x14);
++  m88tc6800_write_reg(priv, 0x4f,0x4c);
++  m88tc6800_write_reg(priv, 0x4e,0x13);
++  m88tc6800_write_reg(priv, 0x4f,bVar11 | 0x10);
++}
++
++void m88tc6800_set_bandwidth(struct m88tc6800_priv *priv, u32 bandwidth_hz)
++{
++    if (bandwidth_hz == 1700) {
++        m88tc6800_write_reg(priv, 0x59, 0x09);
++        m88tc6800_write_reg(priv, 0x29, 0xae);
++        m88tc6800_write_reg(priv, 0x86, 0x3c);
++    }
++    else if (bandwidth_hz == 6000) {
++        m88tc6800_write_reg(priv, 0x59, 0x0a);
++        m88tc6800_write_reg(priv, 0x29, 0xaa);
++        m88tc6800_write_reg(priv, 0x86, 0x12);
++    }
++    else if (bandwidth_hz == 7000) {
++        m88tc6800_write_reg(priv, 0x59, 0x0b);
++        m88tc6800_write_reg(priv, 0x29, 0xa8);
++        m88tc6800_write_reg(priv, 0x86, 0x12);
++    }
++    else if (bandwidth_hz == 8000) {
++        m88tc6800_write_reg(priv, 0x59, 0x0c);
++        m88tc6800_write_reg(priv, 0x29, 0xa8);
++        m88tc6800_write_reg(priv, 0x86, 0x12);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x59, 0x0d);
++        m88tc6800_write_reg(priv, 0x29, 0xa6);
++        m88tc6800_write_reg(priv, 0x86, 0x12);
++    }
++}
++
++void m88tc6800_set_dac(struct m88tc6800_priv *priv, u32 freq_khz, u32 bandwidth_hz)
++{
++  uint32_t uVar1 = priv->config.dac;
++  uint extraout_r0 = freq_khz;
++  int iVar2;
++  int iVar3;
++  uint uVar2;
++  byte cVar4;
++  int extraout_r1;
++  int extraout_r1_00;
++  uint uVar6;
++  uint uVar7;
++  
++                    /* Unresolved local var: uint32_t DACFreq_KHz@[???]
++                       Unresolved local var: uint32_t fc@[???]
++                       Unresolved local var: uint32_t fadc@[???]
++                       Unresolved local var: uint32_t fsd@[???]
++                       Unresolved local var: uint32_t f2d@[???]
++                       Unresolved local var: uint8_t tempnumber@[???]
++                       Unresolved local var: uint8_t flt_bit@[???]
++                       Unresolved local var: uint8_t gain_bit@[???]
++                       Unresolved local var: uint8_t R_22@[???]
++                       Unresolved local var: uint32_t FreqTrue108_Hz@[???]
++                       Unresolved local var: uint32_t f1@[???]
++                       Unresolved local var: uint32_t f2@[???]
++                       Unresolved local var: uint32_t delta1@[???]
++                       Unresolved local var: uint32_t Totalnum1@[???]
++                       Unresolved local var: uint32_t cntT@[???]
++                       Unresolved local var: uint32_t cntin@[???]
++                       Unresolved local var: uint32_t NCOI@[???]
++                       Unresolved local var: uint32_t z0@[???]
++                       Unresolved local var: uint32_t z1@[???]
++                       Unresolved local var: uint32_t z2@[???]
++                       Unresolved local var: uint32_t tmp@[???]
++                       Unresolved local var: uint32_t f1f2number@[???] */
++  if (uVar1 < 0x1195) {
++    cVar4 = 0x40;
++  }
++  else {
++    cVar4 = 0x80;
++  }
++  m88tc6800_write_reg(priv, 0x22, cVar4 + priv->config.dac_gain * '\b' + 0x5);
++  m88tc6800_set_reg_bits(priv, 0x20,0x3,0x5,0x6);
++  if (priv->config.xtal == 24000) {
++    m88tc6800_write_reg(priv, 0x4e,0x6);
++    m88tc6800_write_reg(priv, 0x4f,0xd);
++LAB_0008a204:
++    if (extraout_r0 != 0xf37ff) {
++      if (priv->config.xtal == 24000) {
++        if (0x4a36 < (extraout_r0 + ((extraout_r0 >> 3) / 0xd2f) * -27000) - 0xfa1) {
++          m88tc6800_write_reg(priv, 0x4e,0x6);
++          m88tc6800_write_reg(priv, 0x4f,0x12);
++          if (extraout_r0 % 30000 - 0xfa1 < 21999) {
++            uVar7 = 120000;
++            uVar6 = 120000000;
++          }
++          else {
++            m88tc6800_write_reg(priv, 0x4e,0x6);
++            m88tc6800_write_reg(priv, 0x4f,0x16);
++            if (extraout_r0 % 0x7e90 - 0xfa1 < 0x5f4f) {
++              uVar7 = 0x1fa40;
++              uVar6 = 0x7b98a00;
++            }
++            else {
++              m88tc6800_write_reg(priv, 0x4e,0x6);
++              m88tc6800_write_reg(priv, 0x4f,0xf);
++              if ((extraout_r0 + ((extraout_r0 >> 3) / 0xdc5) * -0x6e28) - 0xfa1 < 0x4ee7) {
++                uVar7 = 0x1b8a0;
++                uVar6 = 0x6b93100;
++              }
++              else {
++                m88tc6800_write_reg(priv, 0x4e,0x6);
++                m88tc6800_write_reg(priv, 0x4f,0x11);
++                uVar7 = 0x1cb60;
++                uVar6 = 0x7026f00;
++              }
++            }
++          }
++          goto LAB_0008a048;
++        }
++      }
++      else if (priv->config.xtal == 27000) {
++        if (extraout_r0 % 27000 - 0xfa1 < 18999) {
++          uVar7 = 0x1a5e0;
++          uVar6 = 108000000;
++        }
++        else {
++          m88tc6800_write_reg(priv, 0x4e,0x6);
++          m88tc6800_write_reg(priv, 0x4f,0xc);
++          if (extraout_r0 % 0x7404 - 0xfa1 < 0x54c3) {
++            uVar7 = 0x1d010;
++            uVar6 = 0x714be80;
++          }
++          else {
++            m88tc6800_write_reg(priv, 0x4e,0x6);
++            m88tc6800_write_reg(priv, 0x4f,0x10);
++            if (extraout_r0 % 0x7e90 - 0xfa1 < 0x5f4f) {
++              uVar7 = 0x1fa40;
++              uVar6 = 0x7b98a00;
++            }
++            else {
++              m88tc6800_write_reg(priv, 0x4e,0x6);
++              m88tc6800_write_reg(priv, 0x4f,0xa);
++              if (extraout_r0 % 0x6ebe - 0xfa1 < 0x4f7d) {
++                uVar7 = 0x1baf8;
++                uVar6 = 0x6c258c0;
++              }
++              else {
++                m88tc6800_write_reg(priv, 0x4e,0x6);
++                m88tc6800_write_reg(priv, 0x4f,0xb);
++                uVar7 = 0x1c584;
++                uVar6 = 0x6eb8ba0;
++              }
++            }
++          }
++        }
++        if (extraout_r0 == 0x79ac9) {
++          m88tc6800_write_reg(priv, 0x4e,0x6);
++          m88tc6800_write_reg(priv, 0x4f,0x4);
++        }
++        goto LAB_0008a048;
++      }
++    }
++  }
++  else if (priv->config.xtal == 27000) {
++    m88tc6800_write_reg(priv, 0x4e,0x6);
++    m88tc6800_write_reg(priv, 0x4f,0x8);
++    goto LAB_0008a204;
++  }
++  uVar7 = 0x1a5e0;
++  uVar6 = 108000000;
++LAB_0008a048:
++  extraout_r1 = (uVar1 * 0x7d000) % uVar6;
++  iVar2 = (extraout_r1 << 5) / uVar6;
++  iVar3 = (uVar1 * 0x7d000) / uVar6;
++  iVar2 = (iVar2 + iVar3 * 0x20) * 4;
++  m88tc6800_write_reg(priv, 0xfa,(uint8_t)((uint)iVar2 >> 8));
++  m88tc6800_write_reg(priv, 0xfb,(uint8_t)iVar2);
++  iVar2 = (bandwidth_hz >> 1) - 100;
++  iVar2 = iVar2 * 0x1a5e0;
++  iVar3 = iVar2 / uVar7;
++  iVar2 = (0x1000 - iVar3) * 0x8000;
++  uVar2 = (unsigned)iVar2 / iVar3;
++  extraout_r1_00 = (unsigned)iVar2 % iVar3;
++  m88tc6800_write_reg(priv, 0xe0,(byte)((uint)(extraout_r1_00 << 0x14) >> 0x1c));
++  m88tc6800_write_reg(priv, 0xe1,(uint8_t)extraout_r1_00);
++  m88tc6800_write_reg(priv, 0xe2,(uint8_t)((uint)iVar3 >> 8));
++  m88tc6800_write_reg(priv, 0xe3,(uint8_t)iVar3);
++  m88tc6800_write_reg(priv, 0xe4,(uint8_t)((ushort)(undefined2)uVar2 >> 8));
++  m88tc6800_write_reg(priv, 0xe5,(uint8_t)(undefined2)uVar2);
++  m88tc6800_write_reg(priv, 0xef,0x0);
++  m88tc6800_write_reg(priv, 0xf0,0x0);
++  m88tc6800_write_reg(priv, 0xf1,0x8);
++  iVar2 = ((uint)(iVar3 << 0xf) >> 0xb) - 0x8000;
++  m88tc6800_write_reg(priv, 0xf2,0x0);
++  m88tc6800_write_reg(priv, 0xf3,(uint8_t)((uint)iVar2 >> 8));
++  m88tc6800_write_reg(priv, 0xf4,(uint8_t)iVar2);
++}
++
++void m88tc6800_set_tune(struct m88tc6800_priv *priv, u32 freq_khz, u32 bandwidth_hz, u8 mixer_type, u32 wait_time_ms)
++{
++  m88tc6800_write_reg(priv, 0x04, 0x7f);
++  m88tc6800_write_reg(priv, 0x05, 0xf8);
++  m88tc6800_preset(priv);
++  m88tc6800_set_rf_frontend(priv, freq_khz);
++  m88tc6800_set_mixer(priv, freq_khz, 1);
++  m88tc6800_set_lo(priv, freq_khz, 1);
++  m88tc6800_set_pll(priv);
++  m88tc6800_set_bandwidth(priv, bandwidth_hz);
++  m88tc6800_write_reg(priv, 0x04, 0x00);
++  m88tc6800_write_reg(priv, 0x05, 0x00);
++  m88tc6800_set_dac(priv, freq_khz, bandwidth_hz);
++  m88tc6800_write_reg(priv, 0x40, 0x1a);
++  m88tc6800_write_reg(priv, 0x41, 0x00);
++  m88tc6800_write_reg(priv, 0x44, 0x22);
++  m88tc6800_write_reg(priv, 0x60, 0x34);
++  m88tc6800_write_reg(priv, 0x05, 0x04);
++  m88tc6800_write_reg(priv, 0xc2, 0x01);
++  m88tc6800_write_reg(priv, 0x00, 0x01);
++  m88tc6800_write_reg(priv, 0x00, 0x00);
++  m88tc6800_write_reg(priv, 0xc2, 0x00);
++  m88tc6800_write_reg(priv, 0x05, 0x00);
++  m88tc6800_write_reg(priv, 0x39, 0x00);
++  m88tc6800_write_reg(priv, 0x3a, 0x00);
++  msleep(wait_time_ms);
++}
++
++void m88tc6800_set_poweron(struct m88tc6800_priv *priv)
++{
++    u8 reg_data;
++    char cVar8;
++    byte local_34;
++    byte local_33;
++    uint8_t local_32;
++
++    m88tc6800_set_reg_bits(priv, 0x3c, 0x1, 0x0, 0x0);
++    m88tc6800_set_reg_bits(priv, 0x55, 0x1, 0x0, 0x0);
++    m88tc6800_write_reg(priv, 0x16, 0x80);
++    m88tc6800_write_reg(priv, 0x17, 0xf3);
++    if (priv->config.xtal_cap != 0x18) {
++      m88tc6800_write_reg(priv, 0x1a, 0x4);
++      m88tc6800_write_reg(priv, 0x1b, priv->config.xtal_cap);
++      m88tc6800_write_reg(priv, 0x1a, 0x5);
++      m88tc6800_write_reg(priv, 0x1b, priv->config.xtal_cap);
++    }
++    m88tc6800_write_reg(priv, 0xe, 0xa4);
++    m88tc6800_write_reg(priv, 0x3, 0x0);
++    m88tc6800_write_reg(priv, 0x4e, 0x2);
++    m88tc6800_write_reg(priv, 0x4f, 0xe9);
++    m88tc6800_write_reg(priv, 0x68, 0xf);
++    m88tc6800_write_reg(priv, 0x69, 0xf1);
++    m88tc6800_write_reg(priv, 0x76, 0x30);
++    m88tc6800_write_reg(priv, 0x78, 0x25);
++    m88tc6800_write_reg(priv, 0x79, 0x1f);
++    m88tc6800_write_reg(priv, 0x7b, 0x0);
++    m88tc6800_write_reg(priv, 0xb1, 0x2a);
++    m88tc6800_write_reg(priv, 0xb2, 0xb2);
++    m88tc6800_write_reg(priv, 0xb3, 0x54);
++    m88tc6800_write_reg(priv, 0xb4, 0x6e);
++    m88tc6800_write_reg(priv, 0xb5, 0x2a);
++    m88tc6800_write_reg(priv, 0xb6, 0xb2);
++    m88tc6800_write_reg(priv, 0xba, 0x90);
++    m88tc6800_write_reg(priv, 0x27, 0xb4);
++    m88tc6800_write_reg(priv, 0x25, 0x2a);
++    m88tc6800_write_reg(priv, 0x84, 0x20);
++    m88tc6800_set_reg_bits(priv, 0xfc, 0x1, 0x5, 0x5);
++    m88tc6800_set_reg_bits(priv, 0x2a, 0x1, 0x0, 0x1);
++    m88tc6800_set_reg_bits(priv, 0xa7, 0x0, 0x0, 0x2);
++    m88tc6800_write_reg(priv, 0x2c, 0xa);
++    m88tc6800_write_reg(priv, 0xc7, 0x2);
++    m88tc6800_write_reg(priv, 0x5, 0x4);
++    m88tc6800_write_reg(priv, 0xc6, 0x80);
++    m88tc6800_write_reg(priv, 0x5, 0x0);
++    m88tc6800_write_reg(priv, 0xad, 0xa);
++    m88tc6800_write_reg(priv, 0xfd, 0x1a);
++    m88tc6800_write_reg(priv, 0x5, 0x4);
++    m88tc6800_write_reg(priv, 0xc7, 0x0);
++    m88tc6800_write_reg(priv, 0x5, 0x0);
++    m88tc6800_write_reg(priv, 0x39, 0x5);
++    m88tc6800_write_reg(priv, 0x3a, 0x3f);
++    m88tc6800_write_reg(priv, 0x39, 0x6);
++    m88tc6800_write_reg(priv, 0x3a, 0x3);
++    m88tc6800_write_reg(priv, 0x39, 0x7);
++    m88tc6800_write_reg(priv, 0x3a, 0xd);
++    m88tc6800_write_reg(priv, 0x39, 0x8);
++    m88tc6800_write_reg(priv, 0x3a, 0x9);
++    m88tc6800_write_reg(priv, 0x39, 0x9);
++    m88tc6800_write_reg(priv, 0x3a, 0x0);
++    m88tc6800_write_reg(priv, 0x39, 0xa);
++    m88tc6800_write_reg(priv, 0x3a, 0x0);
++    m88tc6800_write_reg(priv, 0x39, 0xb);
++    m88tc6800_write_reg(priv, 0x3a, 0x1);
++    m88tc6800_write_reg(priv, 0x39, 0xc);
++    m88tc6800_write_reg(priv, 0x3a, 0x0);
++    m88tc6800_write_reg(priv, 0x39, 0xd);
++    m88tc6800_write_reg(priv, 0x3a, 0x7f);
++    m88tc6800_write_reg(priv, 0x39, 0x1a);
++    m88tc6800_write_reg(priv, 0x3a, 0x8);
++    m88tc6800_write_reg(priv, 0x39, 0x1b);
++    m88tc6800_write_reg(priv, 0x3a, 0xd);
++    m88tc6800_write_reg(priv, 0x39, 0xe);
++    m88tc6800_write_reg(priv, 0x3a, 0x4);
++    m88tc6800_write_reg(priv, 0x39, 0xf);
++    m88tc6800_write_reg(priv, 0x3a, 0x4);
++    m88tc6800_write_reg(priv, 0x39, 0x10);
++    m88tc6800_write_reg(priv, 0x3a, 0x1);
++    m88tc6800_write_reg(priv, 0x4e, 0x2b);
++    m88tc6800_write_reg(priv, 0x4f, 0xa);
++    m88tc6800_write_reg(priv, 0x4e, 0x2c);
++    m88tc6800_write_reg(priv, 0x4f, 0x10);
++    m88tc6800_write_reg(priv, 0x4e, 0x2f);
++    m88tc6800_write_reg(priv, 0x4f, 0x1);
++    m88tc6800_write_reg(priv, 0x4e, 0x29);
++    m88tc6800_write_reg(priv, 0x4f, 0xcc);
++    m88tc6800_write_reg(priv, 0x7c, 0x10);
++    m88tc6800_set_reg_bits(priv, 0x35, 0x0, 0x4, 0x7);
++    m88tc6800_set_reg_bits(priv, 0x37, 0x6, 0x0, 0x2);
++    m88tc6800_set_reg_bits(priv, 0xbd, 0x1, 0x7, 0x7);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x40);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x41);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x42);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x4a);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x52);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x5a);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0x62);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0xa2);
++    m88tc6800_write_reg(priv, 0xb8, 0x0);
++    m88tc6800_write_reg(priv, 0xbe, 0xe2);
++    m88tc6800_write_reg(priv, 0xb8, 0x1);
++    m88tc6800_write_reg(priv, 0xbe, 0x22);
++    m88tc6800_write_reg(priv, 0xb8, 0x1);
++    m88tc6800_write_reg(priv, 0xbe, 0x62);
++    m88tc6800_write_reg(priv, 0xb8, 0x3);
++    m88tc6800_write_reg(priv, 0xbe, 0x62);
++    m88tc6800_write_reg(priv, 0xb8, 0x5);
++    m88tc6800_write_reg(priv, 0xbe, 0x62);
++    m88tc6800_write_reg(priv, 0xb8, 0x5);
++    m88tc6800_write_reg(priv, 0xbe, 0xa2);
++    m88tc6800_write_reg(priv, 0xb8, 0x7);
++    m88tc6800_write_reg(priv, 0xbe, 0xa2);
++    m88tc6800_write_reg(priv, 0xb8, 0x7);
++    m88tc6800_write_reg(priv, 0xbe, 0xaa);
++    m88tc6800_write_reg(priv, 0xb8, 0x7);
++    m88tc6800_write_reg(priv, 0xbe, 0xb2);
++    m88tc6800_write_reg(priv, 0xb8, 0x7);
++    m88tc6800_write_reg(priv, 0xbe, 0xb3);
++    m88tc6800_write_reg(priv, 0xa0, 0xc);
++    m88tc6800_write_reg(priv, 0x39, 0x6a);
++    m88tc6800_write_reg(priv, 0x3a, 0x3f);
++    m88tc6800_set_reg_bits(priv, 0x1d, 0x0, 0x1, 0x1);
++    m88tc6800_write_reg(priv, 0x4e, 0x5);
++    m88tc6800_write_reg(priv, 0x4f, 0xc0);
++    m88tc6800_write_reg(priv, 0x4e, 0x5);
++    m88tc6800_write_reg(priv, 0x4f, 0x80);
++    m88tc6800_write_reg(priv, 0x45, 0x5d);
++    m88tc6800_set_tune(priv, 0xf37ff, 0x32, 1, 8000);
++    m88tc6800_write_reg(priv, 0x14, 0x7b);
++    m88tc6800_write_reg(priv, 0x12, 0x1e);
++    m88tc6800_set_reg_bits(priv, 0xbd, 0x1, 0x4, 0x4);
++    m88tc6800_set_reg_bits(priv, 0xbc, 0x3, 0x6, 0x7);
++    m88tc6800_expand_reg_bits(priv, 0x53, 0xa, 0x0, 0x7, 0x7);
++    m88tc6800_expand_reg_bits(priv, 0x53, 0xd, 0x0, 0x7, 0x7);
++    m88tc6800_expand_reg_bits(priv, 0x53, 0x14, 0x1, 0x6, 0x6);
++    m88tc6800_write_reg(priv, 0x53, 0x3);
++    m88tc6800_write_reg(priv, 0x54, 0x5a);
++    m88tc6800_write_reg(priv, 0x53, 0x4);
++    m88tc6800_write_reg(priv, 0x54, 0xc4);
++    cVar8 = '\x04';
++    do {
++      m88tc6800_write_reg(priv, 0x53, 0x1);
++      m88tc6800_write_reg(priv, 0x54, 0x0);
++      m88tc6800_write_reg(priv, 0x53, 0x0);
++      m88tc6800_write_reg(priv, 0x54, 0xff);
++      m88tc6800_write_reg(priv, 0x53, 0x0);
++      cVar8 = cVar8 + -1;
++      m88tc6800_write_reg(priv, 0x54, 0x0);
++      m88tc6800_expand_reg_bits(priv, 0x53, 0x2, 0x1, 0x6, 0x6);
++      m88tc6800_expand_reg_bits(priv, 0x53, 0x2, 0x0, 0x6, 0x6);
++      m88tc6800_write_reg(priv, 0x53, 0x1);
++      m88tc6800_write_reg(priv, 0x54, 0x3a);
++      m88tc6800_write_reg(priv, 0x53, 0x6);
++      m88tc6800_read_reg(priv, 0x54, &local_34);
++      m88tc6800_write_reg(priv, 0x53, 0x8);
++      m88tc6800_read_reg(priv, 0x54, &local_33);
++      m88tc6800_read_reg(priv, 0x50, &local_32);
++      if (((local_34 - 0x2c < 3) && (local_33 - 0x2c < 3)) && ((byte)(local_32 + 0x3b) < 4)) break;
++    } while (cVar8 != '\0');
++    m88tc6800_write_reg(priv, 0x53, 0x1);
++    m88tc6800_write_reg(priv, 0x54, 0x0);
++    m88tc6800_write_reg(priv, 0x12, 0xe);
++    m88tc6800_set_reg_bits(priv, 0xbd, 0x0, 0x4, 0x4);
++    m88tc6800_write_reg(priv, 0x53, 0xa);
++    m88tc6800_write_reg(priv, 0x54, 0x80);
++    m88tc6800_write_reg(priv, 0x53, 0xb);
++    m88tc6800_write_reg(priv, 0x54, 0x0);
++    m88tc6800_write_reg(priv, 0x53, 0xc);
++    m88tc6800_write_reg(priv, 0x54, 0x0);
++    m88tc6800_write_reg(priv, 0x53, 0xd);
++    m88tc6800_write_reg(priv, 0x54, 0x80);
++    m88tc6800_write_reg(priv, 0x53, 0xe);
++    m88tc6800_write_reg(priv, 0x54, 0x0);
++    m88tc6800_write_reg(priv, 0x53, 0xf);
++    m88tc6800_write_reg(priv, 0x54, 0x0);
++    if (priv->config.xtal == 24000) {
++      m88tc6800_set_reg_bits(priv, 0x5b, 0x2, 0x3, 0x5);
++    }
++    else if (priv->config.xtal == 27000) {
++      m88tc6800_set_reg_bits(priv, 0x5b, 0x6, 0x3, 0x5);
++      m88tc6800_expand_reg_bits(priv, 0x4e, 0x8, 0x1, 0x7, 0x7);
++      m88tc6800_set_tune(priv, 0x79ac9, 0x32, 1, 8000);
++      m88tc6800_write_reg(priv, 0x39, 0x77);
++      m88tc6800_read_reg(priv, 0x3a, &reg_data);
++      m88tc6800_write_reg(priv, 0x39, 0x77);
++      m88tc6800_write_reg(priv, 0x3a, (reg_data & 0x3f) | 0x40);
++    }
++    m88tc6800_write_reg(priv, 0x45, 0x5d);
++    m88tc6800_set_reg_bits(priv, 0x3c, 0x1, 0x7, 0x7);
++}
++
++static int m88tc6800_set_freq(struct m88tc6800_priv *priv, u32 freq_khz, u32 bandwidth_hz)
++{
++    u8 reg_data;
++
++    m88tc6800_read_reg(priv, 0x3e, &reg_data);
++    reg_data = (reg_data & 0x1e) >> 1;
++    if (reg_data != 0) {
++        m88tc6800_set_reg_bits(priv, 0x3c, 0, 7, 7);
++        m88tc6800_set_reg_bits(priv, 0x3e, 0, 1, 4);
++    }
++
++    m88tc6800_read_reg(priv, 0x07, &reg_data);
++    if (reg_data & 0x8) {
++        m88tc6800_write_reg(priv, 0x07, 0x0d);
++        m88tc6800_write_reg(priv, 0x11, 0x00);
++    }
++    else {
++        m88tc6800_write_reg(priv, 0x0c, 0x63);
++        m88tc6800_write_reg(priv, 0x07, 0x0d);
++        m88tc6800_write_reg(priv, 0x0c, 0xe3);
++        m88tc6800_write_reg(priv, 0x11, 0x00);
++    }
++
++    m88tc6800_read_reg(priv, 0x3c, &reg_data);
++    reg_data &= 0x80;
++    //if (reg_data == 0) {
++    //    m88tc6800_set_poweron(priv);
++    //}
++    //else {
++        m88tc6800_write_reg(priv, 0x45, 0x5d);
++    //}
++    m88tc6800_write_reg(priv, 0x04, 0x7f);
++    m88tc6800_write_reg(priv, 0x05, 0xd8);
++    m88tc6800_preset(priv);
++    m88tc6800_set_rf_frontend(priv, freq_khz);
++    m88tc6800_write_reg(priv, 0x05, 0xf8);
++    m88tc6800_set_mixer(priv, freq_khz, m88tc6800_get_mixer_type(freq_khz));
++    m88tc6800_set_lo(priv, freq_khz, m88tc6800_get_mixer_type(freq_khz));
++    m88tc6800_set_pll(priv);
++    m88tc6800_set_bandwidth(priv, bandwidth_hz);
++    m88tc6800_write_reg(priv, 0x04, 0x00);
++    m88tc6800_write_reg(priv, 0x05, 0x00);
++    m88tc6800_read_reg(priv, 0x3e, &reg_data); // TODO: not needed
++    m88tc6800_set_dac(priv, freq_khz, bandwidth_hz);
++    m88tc6800_write_reg(priv, 0xc9, 0x05);
++    m88tc6800_write_reg(priv, 0x40, 0x1a);
++    m88tc6800_write_reg(priv, 0x41, 0x00);
++    if (priv->config.xtal == 24000) {
++        m88tc6800_write_reg(priv, 0x44, 0x22);
++    }
++    else if (priv->config.xtal == 27000) {
++        m88tc6800_write_reg(priv, 0x44, 0x2a);
++    }
++    m88tc6800_write_reg(priv, 0x60, 0x34);
++    m88tc6800_write_reg(priv, 0x05, 0x04);
++    m88tc6800_write_reg(priv, 0xc2, 0x01);
++    m88tc6800_write_reg(priv, 0x00, 0x01);
++    m88tc6800_write_reg(priv, 0x00, 0x00);
++    m88tc6800_write_reg(priv, 0xc2, 0x00);
++    m88tc6800_write_reg(priv, 0x05, 0x00);
++    m88tc6800_write_reg(priv, 0x39, 0x00);
++    m88tc6800_write_reg(priv, 0x3a, 0x00);
++    m88tc6800_write_reg(priv, 0x0d, 0xc4);
++    m88tc6800_write_reg(priv, 0x3d, 0xfe);
++    {
++        u32 tmp1, tmp2, tmp3;
++        m88tc6800_read_reg(priv, 0x4a, &reg_data);
++        tmp1 = reg_data;
++        m88tc6800_read_reg(priv, 0x4b, &reg_data);
++        tmp2 = reg_data;
++        m88tc6800_read_reg(priv, 0x4c, &reg_data);
++        tmp3 = (((tmp1 & 0xf) << 8) + tmp2) >> ((reg_data << 25) >> 30);
++        if (priv->config.xtal == 27000) {
++            tmp3 = 1000 * (tmp3 * 216) / 24;
++        }
++        else {
++            tmp3 = 1000 * tmp3 * 8;
++        }
++        if ((tmp3 - freq_khz <= 20000) || (freq_khz - tmp3 <= 20000) || (tmp3 - 3 * freq_khz <= 20000) || (3 * freq_khz - tmp3 <= 20000)) {
++            m88tc6800_write_reg(priv, 0x10, 0x50);
++        }
++    }
++    m88tc6800_write_reg(priv, 0x66, 0x48);
++    m88tc6800_write_reg(priv, 0xb0, 0x0b);
++    m88tc6800_write_reg(priv, 0x60, 0x34);
++    return 0;
++}
++
++static int m88tc6800_set_params(struct dvb_frontend *fe)
++{
++	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
++	struct m88tc6800_priv *priv = fe->tuner_priv;
++	int ret;
++	u32 bw;
++	u32 freq_khz = c->frequency / 1000;
++	
++	dev_dbg(&priv->i2c->dev, 
++		"%s: delivery_system=%d frequency=%d bandwidth_hz=%d\n", 
++		__func__, c->delivery_system, c->frequency, c->bandwidth_hz);
++
++	if (c->bandwidth_hz <= 6000000) {
++		bw = 6000;
++	}
++	else if (c->bandwidth_hz <= 7000000) {
++		bw = 7000;
++	}
++	else {
++		bw = 8000;
++	}
++
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 1);
++
++	ret = m88tc6800_set_freq(priv, freq_khz, bw);
++	if (ret)
++		goto err;
++
++	priv->frequency_hz = freq_khz * 1000;
++	priv->bandwidth_hz = bw;
++
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 0);
++
++	return 0;
++
++err:
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 0);
++
++	dev_err(&priv->i2c->dev, "%s: failed=%d\n", __func__, ret);
++	return ret;
++}
++
++static int m88tc6800_get_frequency(struct dvb_frontend *fe, u32 *frequency)
++{
++	struct m88tc6800_priv *priv = fe->tuner_priv;
++	*frequency = priv->frequency_hz;
++	return 0;
++}
++
++static int m88tc6800_get_bandwidth(struct dvb_frontend *fe, u32 *bandwidth)
++{
++	struct m88tc6800_priv *priv = fe->tuner_priv;
++	*bandwidth = priv->bandwidth_hz;
++	return 0;
++}
++
++static uint32_t xm_list_dBm[] = {
++       0x0,           0x0,         0x25A,         0x3BA,
++     0x4B4,         0x576,         0x614,         0x69A,
++     0x70E,         0x774,         0x7D0,         0x823,
++     0x86E,         0x8B4,         0x8F4,         0x930,
++     0x968,         0x99D,         0x9CF,         0x9FE,
++     0xA2A,         0xA54,         0xA7D,         0xAA3,
++     0xAC8,         0xAEC,         0xB0E,         0xB2F,
++     0xB4E,         0xB6D,         0xB8A,         0xBA7,
++     0xBC2,         0xBDD,         0xBF7,         0xC10,
++     0xC29,         0xC40,         0xC58,         0xC6E,
++     0xC84,         0xC9A,         0xCAE,         0xCC3,
++     0xCD7,         0xCEA,         0xCFE,         0xD10,
++     0xD22,         0xD34,         0xD46,         0xD57,
++     0xD68,         0xD79,         0xD89,         0xD99,
++     0xDA8,         0xDB8,         0xDC7,         0xDD6,
++     0xDE4,         0xDF3,         0xE01,         0xE0F,
++     0xE1C,         0xE2A,         0xE37,         0xE44,
++     0xE51,         0xE5E,         0xE6A,         0xE77,
++     0xE83,         0xE8F,         0xE9A,         0xEA6,
++     0xEB2,         0xEBD,         0xEC8,         0xED3,
++     0xEDE,         0xEE9,         0xEF4,         0xEFE,
++     0xF09,         0xF13,         0xF1D,         0xF27,
++     0xF31,         0xF3B,         0xF44,         0xF4E,
++     0xF58,         0xF61,         0xF6A,         0xF73,
++     0xF7D,         0xF86,         0xF8E,         0xF97,
++     0xFA0,         0xFA9,         0xFB1,         0xFBA,
++     0xFC2,         0xFCA,         0xFD3,         0xFDB,
++     0xFE3,         0xFEB,         0xFF3,         0xFFB,
++    0x1002,        0x100A,        0x1012,        0x1019,
++    0x1021,        0x1028,        0x1030,        0x1037,
++    0x103E,        0x1046,        0x104D,        0x1054,
++    0x105B,        0x1062,        0x1069,        0x1070,
++    0x1076,        0x107D,        0x1084,        0x108B,
++    0x1091,        0x1098,        0x109E,        0x10A5,
++    0x10AB,        0x10B1,        0x10B8,        0x10BE,
++    0x10C4,        0x10CA,        0x10D1,        0x10D7,
++    0x10DD,        0x10E3,        0x10E9,        0x10EF,
++    0x10F5,        0x10FA,        0x1100,        0x1106,
++    0x110C,        0x1111,        0x1117,        0x111D,
++    0x1122,        0x1128,        0x112D,        0x1133,
++    0x1138,        0x113E,        0x1143,        0x1148,
++    0x114E,        0x1153,        0x1158,        0x115D,
++    0x1163,        0x1168,        0x116D,        0x1172,
++    0x1177,        0x117C,        0x1181,        0x1186,
++    0x118B,        0x1190,        0x1195,        0x119A,
++    0x119F,        0x11A3,        0x11A8,        0x11AD,
++    0x11B2,        0x11B6,        0x11BB,        0x11C0,
++    0x11C4,        0x11C9,        0x11CE,        0x11D2,
++    0x11D7,        0x11DB,        0x11E0,        0x11E4,
++    0x11E9,        0x11ED,        0x11F1,        0x11F6,
++    0x11FA,        0x11FE,        0x1203,        0x1207,
++    0x120B,        0x1210,        0x1214,        0x1218,
++    0x121C,        0x1220,        0x1224,        0x1229,
++    0x122D,        0x1231,        0x1235,        0x1239,
++    0x123D,        0x1241,        0x1245,        0x1249,
++    0x124D,        0x1251,        0x1255,        0x1259,
++    0x125C,        0x1260,        0x1264,        0x1268,
++    0x126C,        0x1270,        0x1273,        0x1277,
++    0x127B,        0x127F,        0x1282,        0x1286,
++    0x128A,        0x128D,        0x1291,        0x1295,
++    0x1298,        0x129C,        0x12A0,        0x12A3,
++    0x12A7,        0x12AA,        0x12AE,        0x12B1,
++    0x12B5,        0x12B8,        0x12BC,        0x12BF,
++    0x12C3,        0x12C6,        0x12CA,        0x12CD
++};
++
++static int m88tc6800_get_rf_strength(struct dvb_frontend *fe, u16 *strength)
++{
++  uint32_t uVar1;
++  uint uVar2;
++  int iVar3;
++  int iVar4;
++  bool bVar5;
++  byte local_31 [5];
++  struct m88tc6800_priv *priv = fe->tuner_priv;
++
++                    /* Unresolved local var: uint32_t ret@[???]
++                       Unresolved local var: int32_t rfLevel@[???] */
++                    /* Unresolved local var: uint32_t ret@[???]
++                       Unresolved local var: char[22] __func__@[???] */
++                    /* Unresolved local var: uint32_t ret@[???]
++                       Unresolved local var: int32_t rflevel@[???]
++                       Unresolved local var: uint8_t buf@[???]
++                       Unresolved local var: uint8_t bufH@[???]
++                       Unresolved local var: uint8_t bufL@[???]
++                       Unresolved local var: int32_t level@[???]
++                       Unresolved local var: int32_t gain_x10@[???]
++                       Unresolved local var: int32_t gain_ref_x10@[???]
++                       Unresolved local var: int32_t pd_x10@[???]
++                       Unresolved local var: int32_t pdtref_x10@[???]
++                       Unresolved local var: uint32_t freq_KHz@[???]
++                       Unresolved local var: uint32_t[16][16] xm_list_dBm@[???] */
++  uint32_t freq_khz = priv->frequency_hz / 1000;
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 1);
++  uVar1 = freq_khz;
++  if (freq_khz < 0x1adb1) {
++    m88tc6800_read_reg(priv, 0x63,local_31);
++    uVar2 = (uint)local_31[0];
++    m88tc6800_read_reg(priv, 0x8b,local_31);
++    iVar4 = uVar2 * 10 + -0x1d1;
++    iVar3 = uVar2 * 10 + -0x13b;
++    local_31[0] = local_31[0] & 0x77;
++LAB_0008e5cc:
++    if (local_31[0] == 0x55) {
++      iVar3 = iVar4 + 0x82;
++    }
++    else {
++joined_r0x0008e5dc:
++      if (local_31[0] == 0x11) {
++        if (uVar1 < 0xc3501) {
++          iVar3 = iVar3 + -0x28;
++        }
++        else {
++          iVar3 = iVar3 + -0x19;
++        }
++      }
++    }
++  }
++  else if (freq_khz < 0x30d41) {
++    m88tc6800_read_reg(priv, 0x63,local_31);
++    uVar2 = (uint)local_31[0];
++    iVar3 = uVar2 * 10 + -300;
++    m88tc6800_read_reg(priv, 0x8b,local_31);
++    local_31[0] = local_31[0] & 0x77;
++    if (local_31[0] != 0x55) goto joined_r0x0008e5dc;
++    iVar3 = uVar2 * 10 + -0x140;
++  }
++  else {
++    if (freq_khz < 0x518b1) {
++      iVar4 = -0x1ae;
++    }
++    else if (freq_khz < 0x61a81) {
++      iVar4 = -0x1ea;
++    }
++    else if (freq_khz < 0x927c1) {
++      iVar4 = -0x1d6;
++    }
++    else if (freq_khz < 0xaae61) {
++      iVar4 = -0x1c7;
++    }
++    else {
++      if (800000 < freq_khz) {
++        if (freq_khz < 0xdbba1) {
++          m88tc6800_read_reg(priv, 0x63,local_31);
++          uVar2 = (uint)local_31[0];
++          iVar4 = uVar2 * 10 + -0x1cc;
++          m88tc6800_read_reg(priv, 0x8b,local_31);
++          iVar3 = uVar2 * 10 + -0x136;
++          local_31[0] = local_31[0] & 0x77;
++          goto LAB_0008e5cc;
++        }
++        m88tc6800_read_reg(priv, 0x63,local_31);
++        iVar3 = (short)(ushort)local_31[0] * 10 + -0x154;
++        m88tc6800_read_reg(priv, 0x8b,local_31);
++        local_31[0] = local_31[0] & 0x77;
++        goto LAB_0008e4e4;
++      }
++      iVar4 = -0x1c2;
++    }
++    m88tc6800_read_reg(priv, 0x63,local_31);
++    iVar4 = (short)(ushort)local_31[0] * 10 + iVar4;
++    m88tc6800_read_reg(priv, 0x8b,local_31);
++    iVar3 = iVar4 + 0x96;
++    local_31[0] = local_31[0] & 0x77;
++    if (uVar1 < 0xdbba1) goto LAB_0008e5cc;
++  }
++LAB_0008e4e4:
++  if (7999 < uVar1 - 0x595b1) {
++    if (uVar1 - 480000 < 0x2ee1) goto LAB_0008e764;
++    if (14000 < uVar1 - 610000) {
++      if (20000 < uVar1 - 800000) goto LAB_0008e508;
++      goto LAB_0008e75c;
++    }
++  }
++  else if (65999 < uVar1 - 0x518b1) {
++    if (73999 < uVar1 - 0x61a81) {
++      if (((uVar1 - 0x73b91 < 0x1ec30) || (uVar1 - 0x927c1 < 200000)) || (uVar1 - 0xc3501 < 58000))
++      {
++        iVar3 = iVar3 + 0x41;
++        goto LAB_0008e508;
++      }
++      if (41999 < uVar1 - 0xd1791) {
++        if (uVar1 - 0xdbba1 < 120000) {
++          iVar3 = iVar3 + 0xf;
++        }
++        else {
++          bVar5 = uVar1 == 110000;
++          if (uVar1 < 0x1adb1) {
++            bVar5 = 0;
++          }
++          if (bVar5) {
++            iVar3 = iVar3 + -0x1e;
++          }
++        }
++        goto LAB_0008e508;
++      }
++LAB_0008e75c:
++      iVar3 = iVar3 + 10;
++      goto LAB_0008e508;
++    }
++LAB_0008e764:
++    iVar3 = iVar3 + 0x32;
++    goto LAB_0008e508;
++  }
++  iVar3 = iVar3 + 0x3c;
++LAB_0008e508:
++  m88tc6800_read_reg(priv, 0xc8,local_31);
++  iVar3 = (int)((xm_list_dBm[local_31[0]] / 10 - 0x1a9) - iVar3) / 10;
++  iVar4 = -0x6b;
++  if (-0x6c < iVar3) {
++    iVar4 = iVar3;
++  }
++  *strength = iVar4;
++	if (fe->ops.i2c_gate_ctrl)
++		fe->ops.i2c_gate_ctrl(fe, 0);
++  return 0;
++}
++
++static struct dvb_tuner_ops m88tc6800_tuner_ops = {
++	.info = {
++		.name = "Montage M88TC6800",
++		.frequency_min_hz = 48 * MHz,
++		.frequency_max_hz = 900 * MHz,
++		.frequency_step_hz = 1 * kHz,
++	},
++	.init              = m88tc6800_init,
++	.set_params        = m88tc6800_set_params,
++	.get_frequency     = m88tc6800_get_frequency,
++	.get_bandwidth     = m88tc6800_get_bandwidth,
++	.get_rf_strength   = m88tc6800_get_rf_strength,
++};
++
++static int m88tc6800_bind(struct device *dev,
++                        struct device *master,
++                        void *data)
++{
++    struct i2c_client *client = to_i2c_client(dev);
++    struct m88tc6800_priv *priv = i2c_get_clientdata(client);
++    struct dvb_frontend *fe = data;
++    int ret = 0;
++
++	fe->tuner_priv = priv;
++	ret = m88tc6800_init(fe);
++	if (ret) {
++        dev_err(&client->dev, "Failed to attach M88TC6800\n");
++		goto err;
++    }
++
++	memcpy(&fe->ops.tuner_ops, &m88tc6800_tuner_ops,
++	       sizeof(struct dvb_tuner_ops));
++
++	dev_info(&client->dev, "Attaching M88TC6800\n");
++
++    return 0;
++
++err:
++    return -1;
++}
++
++static void m88tc6800_unbind(struct device *dev,
++                           struct device *master,
++                           void *data)
++{
++    struct i2c_client *client = to_i2c_client(dev);
++    struct dvb_frontend *fe = data;
++	fe->tuner_priv = NULL;
++    memset(&fe->ops.tuner_ops, 0, sizeof(struct dvb_tuner_ops));
++    dev_info(&client->dev, "unbinding\n");
++}
++
++static const struct component_ops m88tc6800_component_ops = {
++    .bind = m88tc6800_bind,
++    .unbind = m88tc6800_unbind,
++};
++
++
++static int m88tc6800_probe(struct i2c_client *client)
++{
++    struct i2c_adapter *i2c = client->adapter;
++    const struct m88tc6800_config *config = i2c_get_match_data(client);
++	struct m88tc6800_priv *priv = NULL;
++	int ret;
++
++	priv = kzalloc(sizeof(struct m88tc6800_priv), GFP_KERNEL);
++	if (!priv) {
++		dev_err(&i2c->dev, "kzalloc() failed\n");
++		return -1;
++	}
++
++	memcpy(&priv->config, config, sizeof(priv->config));
++	priv->i2c = i2c;
++	priv->config.addr = client->addr;
++	priv->mcu_status = false;
++
++	dev_info(&i2c->dev, "Attaching M88TC6800\n");
++
++    i2c_set_clientdata(client, priv);
++    ret = component_add(&client->dev, &m88tc6800_component_ops);
++    if (ret) {
++        dev_err(&client->dev, "Failed to add as component\n");
++        goto err;
++    }
++
++	return 0;
++
++err:
++    kfree(priv);
++    return -1;
++}
++
++static void m88tc6800_remove(struct i2c_client *client)
++{
++	struct m88tc6800_priv *priv = i2c_get_clientdata(client);
++
++    component_del(&client->dev, &m88tc6800_component_ops);
++
++    dev_info(&priv->i2c->dev, "M88TC6800 removing\n");
++
++    kfree(priv);
++
++    return;
++}
++
++static const struct m88tc6800_config m88tc6800_configs[] = {
++    {
++	    .addr = 0x64,
++	    .xtal = 27000,
++	    .xtal_cap = 0x18,
++	    .mode = 0,
++	    .int_lt = 2,
++	    .int_im = 2,
++	    .custom_cfg = 0,
++	    .harmonic_imp = 1,
++	    .dac_gain = 2,
++	    .dac = 4570,
++    },
++};
++
++static const struct of_device_id m88tc6800_of_match[] = {
++    { .compatible = "montage,m88tc6800-27", .data = &m88tc6800_configs[0] },
++    {}
++};
++MODULE_DEVICE_TABLE(of, m88tc6800_of_match);
++
++static const struct i2c_device_id m88tc6800_id_table[] = {
++    { "m88tc6800-27", (kernel_ulong_t)&m88tc6800_configs[0] },
++	{}
++};
++MODULE_DEVICE_TABLE(i2c, m88tc6800_id_table);
++
++static struct i2c_driver m88tc6800_driver = {
++    .driver = {
++        .name                = "m88tc6800",
++        .of_match_table      = m88tc6800_of_match,
++    },
++    .probe      = m88tc6800_probe,
++    .remove     = m88tc6800_remove,
++    .id_table   = m88tc6800_id_table,
++};
++
++module_i2c_driver(m88tc6800_driver);
++
++MODULE_DESCRIPTION("Montage M88TC6800 tuner driver");
++MODULE_AUTHOR("Marek Czerski <ma.czerski@gmail.com>");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/media/tuners/m88tc6800.h b/drivers/media/tuners/m88tc6800.h
+new file mode 100644
+index 000000000000..ebd8124175ff
+--- /dev/null
++++ b/drivers/media/tuners/m88tc6800.h
+@@ -0,0 +1,26 @@
++#ifndef __M88TC6800_H__
++#define __M88TC6800_H__
++
++#include "media/dvb_frontend.h"
++
++
++struct m88tc6800_config {
++	u8 addr;
++	u32 xtal;
++	u8 xtal_cap;
++	u8 mode;
++	u8 int_lt;
++	u8 int_im;
++	u8 custom_cfg;
++	u8 harmonic_imp;
++	u8 dac_gain;
++	u32 dac;
++};
++
++
++
++extern struct dvb_frontend *m88tc6800_attach(struct dvb_frontend *fe,
++					    struct i2c_adapter *i2c,
++					    struct m88tc6800_config *cfg);
++
++#endif /* __M88TC6800_H__ */
