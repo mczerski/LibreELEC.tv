@@ -1,0 +1,71 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7322374..d8dbfc0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,7 +13,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL Windows)
+   set(_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+   set(CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_SHARED_LIBRARY_SUFFIX})
+ endif()
+-find_library(UAE_LIB NAMES puae_libretro${CMAKE_SHARED_LIBRARY_SUFFIX} PATH_SUFFIXES libretro)
++find_library(UAE_LIB NAMES puae2021_libretro${CMAKE_SHARED_LIBRARY_SUFFIX} PATH_SUFFIXES libretro)
+ if(CMAKE_SYSTEM_NAME STREQUAL Windows)
+   set(CMAKE_FIND_LIBRARY_SUFFIXES ${_CMAKE_FIND_LIBRARY_SUFFIXES})
+ endif()
+diff --git a/depends/common/uae/CMakeLists.txt b/depends/common/uae/CMakeLists.txt
+index 7dc2340..7988d32 100644
+--- a/depends/common/uae/CMakeLists.txt
++++ b/depends/common/uae/CMakeLists.txt
+@@ -23,7 +23,7 @@ else()
+ endif()
+ 
+ set(LIBRETRO_BINARY_DIR .)
+-set(LIBRETRO_SONAME puae_libretro${CMAKE_SHARED_LIBRARY_SUFFIX})
++set(LIBRETRO_SONAME puae2021_libretro${CMAKE_SHARED_LIBRARY_SUFFIX})
+ set(LIBRETRO_JNISONAME libretro${CMAKE_SHARED_LIBRARY_SUFFIX})
+ 
+ if(CMAKE_BUILD_TYPE MATCHES Debug)
+@@ -75,7 +75,7 @@ elseif(CORE_SYSTEM_NAME STREQUAL osx)
+                     )
+ elseif(CORE_SYSTEM_NAME STREQUAL ios OR CORE_SYSTEM_NAME STREQUAL darwin_embedded)
+   if(CORE_PLATFORM_NAME STREQUAL ios)
+-    set(LIBRETRO_SONAME puae_libretro_ios${CMAKE_SHARED_LIBRARY_SUFFIX})
++    set(LIBRETRO_SONAME puae2021_libretro_ios${CMAKE_SHARED_LIBRARY_SUFFIX})
+     if(CPU STREQUAL arm64)
+       set(PLATFORM ios-arm64)
+     else()
+@@ -90,7 +90,7 @@ elseif(CORE_SYSTEM_NAME STREQUAL ios OR CORE_SYSTEM_NAME STREQUAL darwin_embedde
+                                                   platform=${PLATFORM}
+                                                   )
+   elseif(CORE_PLATFORM_NAME STREQUAL tvos)
+-    set(LIBRETRO_SONAME puae_libretro_tvos${CMAKE_SHARED_LIBRARY_SUFFIX})
++    set(LIBRETRO_SONAME puae2021_libretro_tvos${CMAKE_SHARED_LIBRARY_SUFFIX})
+     set(BUILD_COMMAND IOSSDK=${CMAKE_OSX_SYSROOT} $(MAKE)
+                                                   -C .
+                                                   -f Makefile
+@@ -146,4 +146,4 @@ externalproject_add(${PROJECT_NAME}
+ 
+ # install the generated shared library
+ install(FILES ${PROJECT_SOURCE_DIR}/${LIBRETRO_BINARY_DIR}/${LIBRETRO_SONAME}
+-        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/libretro RENAME puae_libretro${CMAKE_SHARED_LIBRARY_SUFFIX})
++        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/libretro RENAME puae2021_libretro${CMAKE_SHARED_LIBRARY_SUFFIX})
+diff --git a/game.libretro.uae/resources/buttonmap.xml b/game.libretro.uae/resources/buttonmap.xml
+index 1e802c7..a2ca57a 100644
+--- a/game.libretro.uae/resources/buttonmap.xml
++++ b/game.libretro.uae/resources/buttonmap.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <buttonmap version="2">
+-  <controller id="game.controller.amiga.cd32" type="RETRO_DEVICE_ANALOG" subclass="1">
++  <controller id="game.controller.amiga.cd32" type="RETRO_DEVICE_JOYPAD">
+     <feature name="up" mapto="RETRO_DEVICE_ID_JOYPAD_UP"/>
+     <feature name="down" mapto="RETRO_DEVICE_ID_JOYPAD_DOWN"/>
+     <feature name="right" mapto="RETRO_DEVICE_ID_JOYPAD_RIGHT"/>
+@@ -20,7 +20,7 @@
+     <feature name="r3" mapto="RETRO_DEVICE_ID_JOYPAD_R3"/>
+     -->
+   </controller>
+-  <controller id="game.controller.default" type="RETRO_DEVICE_ANALOG" subclass="2">
++  <controller id="game.controller.default" type="RETRO_DEVICE_JOYPAD">
+     <feature name="b" mapto="RETRO_DEVICE_ID_JOYPAD_A"/>
+     <feature name="a" mapto="RETRO_DEVICE_ID_JOYPAD_B"/>
+     <feature name="y" mapto="RETRO_DEVICE_ID_JOYPAD_X"/>

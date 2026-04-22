@@ -2,8 +2,8 @@
 # Copyright (C) 2018-present Team LibreELEC (https://libreelec.tv)
 
 PKG_NAME="libretro-uae"
-PKG_VERSION="c60e42ef9ad474518d4be859b7c1da2c0c7e1d6f"
-PKG_SHA256="933fd83ad42ceb558c2ae9c0d2ea0a7bb68f05f8ab828951bcabfe400ce8c50f"
+PKG_VERSION="0e938a1b28961948ec129e215d6fe988f9ff0410"
+PKG_SHA256="4c78b4b3118bcdd4996e2848fe434614df51e56a9a443ca011da27209a306e11"
 PKG_LICENSE="GPL"
 PKG_SITE="https://github.com/libretro/libretro-uae"
 PKG_URL="https://github.com/libretro/libretro-uae/archive/${PKG_VERSION}.tar.gz"
@@ -11,7 +11,7 @@ PKG_DEPENDS_TARGET="toolchain"
 PKG_LONGDESC="Portable Commodore Amiga Emulator"
 PKG_TOOLCHAIN="make"
 
-PKG_LIBNAME="puae_libretro.so"
+PKG_LIBNAME="puae2021_libretro.so"
 PKG_LIBPATH="${PKG_LIBNAME}"
 PKG_LIBVAR="UAE_LIB"
 
