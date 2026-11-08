@@ -15,4 +15,7 @@ post_unpack() {
   # rename dirs for alta/solitude
   mv ${PKG_BUILD}/aml-a311d-cc ${PKG_BUILD}/alta
   mv ${PKG_BUILD}/aml-s905d3-cc ${PKG_BUILD}/solitude
+  # mecool-km5 (HM8 clone, raw NAND): the box's own blobs, see files/mecool-km5/Makefile
+  cp -a ${PKG_DIR}/files/mecool-km5 ${PKG_BUILD}/mecool-km5
+  cp -a ${PKG_BUILD}/p212/aml_encrypt_gxl ${PKG_BUILD}/mecool-km5/
 }

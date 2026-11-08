@@ -98,6 +98,13 @@ case "${UBOOT_SYSTEM}" in
     mkimage_extlinux
     mkimage_dtb
     ;;
+  mecool-km5)
+    mkimage_uEnv
+    mkimage_autoscripts
+    mkimage_extlinux
+    mkimage_uboot
+    mkimage_dtb
+    ;;
   *)
     mkimage_uEnv
     mkimage_autoscripts
